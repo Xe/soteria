@@ -1,0 +1,10 @@
+[package]
+name = "soteria"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+soteria-isa = { path = "../soteria-isa" }
+
+[dev-dependencies]
+sha2 = "0.10"

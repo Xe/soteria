@@ -6,48 +6,53 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,250 lines (after rustfmt), 38 tests passing (plus 1 ignored benchmark). Nothing is wired
+Status: working prototype, about 3,300 lines across 3 crates, 38 tests passing (plus 1 ignored benchmark). Nothing is wired
 into Anubis yet.
 
 ## Build and test
 
-Everything targets `wasm32-wasip1`; `.cargo/config.toml` sets the target,
-`+simd128`, and `wasmtime` as the test runner. The crate is
-`#![cfg(target_arch = "wasm32")]`, so a native build compiles to nothing.
+The workspace defaults to `wasm32-wasip1`; `.cargo/config.toml` sets the
+target, `+simd128`, and `wasmtime` as the test runner. `soteria` and
+`soteria-ffi` are `#![cfg(target_arch = "wasm32")]`, so a native build of them
+compiles to nothing. `soteria-isa` builds anywhere.
 
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 38 tests, ~1 s
+cargo test --release                       # 38 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
-cargo build --release --lib --target wasm32-unknown-unknown # verifier for wazero
+cargo build --release -p soteria-ffi --target wasm32-unknown-unknown # verifier for wazero
 ```
 
 Last verified with rustc 1.98.1 and wasmtime 48.0.0. If `cargo test` reports
 "running 0 tests", `.cargo/config.toml` is missing and the build went native.
 
-WASI builds use `panic = abort`, so the first panicking test kills the whole
-test binary and the summary line is missing. Search the output for
+WASI builds use `panic = abort`, so the first panicking test kills its
+crate's test binary and that summary line is missing. Search the output for
 `panicked at` to find which test failed.
 
 ## Layout
 
-| File              | What it is                                                                                                                                                        |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/lib.rs`      | ISA (`Op`), encoding (`Slot`, `Program`), the VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`, opcode tables |
-| `src/sha4.rs`     | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only)                                                                                                   |
-| `src/sched.rs`    | List scheduler: sequential steps → bundles, respecting hazards                                                                                                    |
-| `src/gadgets.rs`  | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget)                                                                                        |
-| `src/best.rs`     | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate`                                                                  |
-| `src/ffi.rs`      | C ABI for wazero: request layout (module docs), `request` encoder, `soteria_*` exports                                                                            |
-| `src/hashcash.rs` | Hand-written hashcash program + host search/verify                                                                                                                |
-| `src/puzzle.rs`   | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested                                                                                       |
-| `src/asm.rs`      | Two-pass assembler; accepts disassembler output plus labels and `;` comments                                                                                      |
-| `src/disasm.rs`   | `Display` for `Slot`, `listing(&Program)`                                                                                                                         |
-| `src/tests.rs`    | All tests                                                                                                                                                         |
-| `build.rs`        | Per-build Fisher-Yates opcode numbering from `SOTERIA_OPCODE_SEED`                                                                                                |
-| `README.md`       | ISA reference table and feature summaries                                                                                                                         |
+A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
+soteria-ffi`.
+
+| Path | What it is |
+|---|---|
+| `crates/soteria-isa/src/lib.rs` | ISA (`Op`, `ops!`), encoding (`Slot`, `Bundle`, `Program`), `Error`, opcode tables. Target-independent |
+| `crates/soteria-isa/build.rs` | Per-build Fisher-Yates opcode numbering from `SOTERIA_OPCODE_SEED` |
+| `crates/soteria-isa/src/asm.rs` | Two-pass assembler; accepts disassembler output plus labels and `;` comments |
+| `crates/soteria-isa/src/disasm.rs` | `Display` for `Slot`, `listing(&Program)` |
+| `crates/soteria-isa/src/sched.rs` | List scheduler: sequential steps to bundles, respecting hazards |
+| `crates/soteria/src/lib.rs` | Re-exports the ISA. The VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`. wasm32 only |
+| `crates/soteria/src/sha4.rs` | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only) |
+| `crates/soteria/src/gadgets.rs` | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
+| `crates/soteria/src/best.rs` | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate` |
+| `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
+| `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
+| `crates/soteria/src/tests.rs` | VM, gadget, best-effort and assembler tests |
+| `crates/soteria-ffi/src/lib.rs` | C ABI for wazero (cdylib): request layout (module docs), `request` encoder, `soteria_*` exports, ABI tests |
+| `README.md` | ISA reference table and feature summaries |
 
 ## Machine model (the spec)
 
@@ -90,8 +95,8 @@ with the guard must be all-true or all-false across the 4 lanes, otherwise
 
 ### Checklist for a new opcode
 
-`ops!` list (at the end) → VM match arm in `step` → `sched::hazards` →
-`disasm` format → `asm::signature` → README table → a test against a scalar
+`ops!` list (at the end) → VM match arm in `step` (`soteria`) →
+`sched::hazards`, `disasm` format, `asm::signature` (all `soteria-isa`) → README table → a test against a scalar
 reference. `listings_round_trip` will fail if disasm and asm disagree.
 
 ### Checklist for a new gadget
@@ -139,7 +144,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 
 1. ~~**Work metric memory term.**~~ Done: `attempt_cost`, `expected_work` (was `expected_bundles`), `budget_accounts_for_scratchpad`.
 2. ~~**Best-effort solving.**~~ Done in `best.rs`. The client feeds batch ranges into `Best` (call `search_best` repeatedly between deadline checks) and submits `Best::nonces`. `verify_best` rejects empty, duplicate or more than `MAX_BEST` (32) nonces, reruns each distinct batch once, and returns `N^ = (K-1) / u_(K)` attempts (multiply by `attempt_cost` for bundle-equivalents). N^ is exactly unbiased with relative error about `1/sqrt(K-2)` (18% at K = 32); `estimator_is_unbiased` and `best_effort_estimates_attempts` check the mean and spread. Uses the first sub-challenge only; `threshold`, `solutions` and `chained` don't apply. Open question for the policy layer: what minimum credit to require, given the 18% spread.
-3. ~~**C-ABI exports for Go/wazero.**~~ Done in `ffi.rs`. The `cdylib` for `wasm32-unknown-unknown` is about 70 KB with no imports. Exports: `memory`, `soteria_alloc(len) -> ptr`, `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`), `soteria_fingerprint() -> i64`. Both verify calls free the buffer, so a pooled instance doesn't leak. The byte layout is in the `ffi.rs` module docs and pinned by `request_layout_is_stable`. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
+3. ~~**C-ABI exports for Go/wazero.**~~ Done in `crates/soteria-ffi`. The `cdylib` (`target/wasm32-unknown-unknown/release/soteria_ffi.wasm`) is about 70 KB with no imports. Exports: `memory`, `soteria_alloc(len) -> ptr`, `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`), `soteria_fingerprint() -> i64`. Both verify calls free the buffer, so a pooled instance doesn't leak. The byte layout is in the `ffi.rs` module docs and pinned by `request_layout_is_stable`. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
 4. **Go verifier.** Embed the `.wasm`, compile once, use an anonymous instance per call (or a `sync.Pool`), plus a context timeout. Benchmark per-call versus pooled.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
 6. **Program blocks from `nonce >> k`.** Derive the program from `H(seed, nonce >> k)`, with blocks aligned to batches, so compilation can't be amortized across a whole challenge.

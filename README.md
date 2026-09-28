@@ -109,9 +109,9 @@ devices earn partial credit instead of nothing.
 round-trips. It's two passes: the first records which bundle each label
 points at, the second parses slots against a per-opcode operand signature.
 
-## Host ABI (`ffi.rs`)
+## Host ABI (`soteria-ffi`)
 
-`cargo build --release --lib --target wasm32-unknown-unknown` produces a core
+`cargo build --release -p soteria-ffi --target wasm32-unknown-unknown` produces a core
 module with no imports for hosts such as wazero. The host gets a buffer from
 `soteria_alloc(len)`, writes a request (seed, params, challenge, nonces; the
 layout is in the `ffi.rs` module docs) and calls `soteria_verify` (1 or 0) or

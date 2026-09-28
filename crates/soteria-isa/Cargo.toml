@@ -1,0 +1,6 @@
+[package]
+name = "soteria-isa"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
