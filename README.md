@@ -109,6 +109,16 @@ devices earn partial credit instead of nothing.
 round-trips. It's two passes: the first records which bundle each label
 points at, the second parses slots against a per-opcode operand signature.
 
+## Host ABI (`ffi.rs`)
+
+`cargo build --release --lib --target wasm32-unknown-unknown` produces a core
+module with no imports for hosts such as wazero. The host gets a buffer from
+`soteria_alloc(len)`, writes a request (seed, params, challenge, nonces; the
+layout is in the `ffi.rs` module docs) and calls `soteria_verify` (1 or 0) or
+`soteria_verify_best` (credited attempts). Both free the buffer. Negative
+results mean a malformed request. `soteria_fingerprint` returns the opcode
+numbering fingerprint to compare with the client build.
+
 ## Per-build opcode numbering (`build.rs`)
 
 Set `SOTERIA_OPCODE_SEED` at build time to Fisher-Yates shuffle all 256 byte

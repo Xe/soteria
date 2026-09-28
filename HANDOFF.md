@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,000 lines (after rustfmt), 33 tests passing (plus 1 ignored benchmark). Nothing is wired
+Status: working prototype, about 3,250 lines (after rustfmt), 38 tests passing (plus 1 ignored benchmark). Nothing is wired
 into Anubis yet.
 
 ## Build and test
@@ -18,9 +18,10 @@ Everything targets `wasm32-wasip1`; `.cargo/config.toml` sets the target,
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 33 tests, ~1 s
+cargo test --release                       # 38 tests, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
+cargo build --release --lib --target wasm32-unknown-unknown # verifier for wazero
 ```
 
 Last verified with rustc 1.98.1 and wasmtime 48.0.0. If `cargo test` reports
@@ -39,6 +40,7 @@ test binary and the summary line is missing. Search the output for
 | `src/sched.rs`    | List scheduler: sequential steps → bundles, respecting hazards                                                                                                    |
 | `src/gadgets.rs`  | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget)                                                                                        |
 | `src/best.rs`     | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate`                                                                  |
+| `src/ffi.rs`      | C ABI for wazero: request layout (module docs), `request` encoder, `soteria_*` exports                                                                            |
 | `src/hashcash.rs` | Hand-written hashcash program + host search/verify                                                                                                                |
 | `src/puzzle.rs`   | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested                                                                                       |
 | `src/asm.rs`      | Two-pass assembler; accepts disassembler output plus labels and `;` comments                                                                                      |
@@ -137,7 +139,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 
 1. ~~**Work metric memory term.**~~ Done: `attempt_cost`, `expected_work` (was `expected_bundles`), `budget_accounts_for_scratchpad`.
 2. ~~**Best-effort solving.**~~ Done in `best.rs`. The client feeds batch ranges into `Best` (call `search_best` repeatedly between deadline checks) and submits `Best::nonces`. `verify_best` rejects empty, duplicate or more than `MAX_BEST` (32) nonces, reruns each distinct batch once, and returns `N^ = (K-1) / u_(K)` attempts (multiply by `attempt_cost` for bundle-equivalents). N^ is exactly unbiased with relative error about `1/sqrt(K-2)` (18% at K = 32); `estimator_is_unbiased` and `best_effort_estimates_attempts` check the mean and spread. Uses the first sub-challenge only; `threshold`, `solutions` and `chained` don't apply. Open question for the policy layer: what minimum credit to require, given the 18% spread.
-3. **C-ABI exports for Go/wazero.** Build a `cdylib` for `wasm32-unknown-unknown` (+simd128) with `soteria_alloc(len) -> ptr` and `soteria_verify(ptr, len) -> i32`. Request layout: `seed u64 | params | challenge[32] | nonces[u32]`. wazero runs core modules only, not components.
+3. ~~**C-ABI exports for Go/wazero.**~~ Done in `ffi.rs`. The `cdylib` for `wasm32-unknown-unknown` is about 70 KB with no imports. Exports: `memory`, `soteria_alloc(len) -> ptr`, `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`), `soteria_fingerprint() -> i64`. Both verify calls free the buffer, so a pooled instance doesn't leak. The byte layout is in the `ffi.rs` module docs and pinned by `request_layout_is_stable`. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
 4. **Go verifier.** Embed the `.wasm`, compile once, use an anonymous instance per call (or a `sync.Pool`), plus a context timeout. Benchmark per-call versus pooled.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
 6. **Program blocks from `nonce >> k`.** Derive the program from `H(seed, nonce >> k)`, with blocks aligned to batches, so compilation can't be amortized across a whole challenge.

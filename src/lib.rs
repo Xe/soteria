@@ -19,6 +19,7 @@ use core::arch::wasm32::*;
 pub mod asm;
 pub mod best;
 pub mod disasm;
+pub mod ffi;
 pub mod gadgets;
 pub mod hashcash;
 pub mod puzzle;

@@ -11,3 +11,6 @@ sha2 = "0.10"
 [profile.release]
 opt-level = 3
 lto = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
