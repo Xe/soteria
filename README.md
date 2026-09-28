@@ -69,11 +69,11 @@ gadgets over the state `r1..r8` → `sha256(state ‖ fold(scratchpad))` →
 compare the first word to a threshold. The fold means every store reaches the
 digest, so an attacker's compiler can't delete stores as dead code. Before the
 gadgets run, `fill` expands `sha256(challenge ‖ nonce)` into the arena, so
-memory is different for every challenge and every nonce. There are 33 gadgets:
+memory is different for every challenge and every nonce. There are 34 gadgets:
 
 | Group | Gadgets |
 |---|---|
-| ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap` |
+| ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap`, `VarRot` |
 | Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap` |
 | Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap` |
 | Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad`, `MemWalk` |
@@ -88,6 +88,8 @@ memory hazards (about 2.7 slots per bundle on the default mix). Float taps
 xor in the result's bits (`fbits`), not its truncated value, so they carry
 full 32-bit entropy. `MemWalk` is an 8-hop pointer chase: each address comes
 from the previous load, so it costs memory latency rather than throughput.
+`VarRot` rotates by `y & 31` per lane, a barrel of five guarded fixed
+rotates, since WASM SIMD only shifts by a scalar.
 
 Difficulty axes (`Params`): gadget count, category mix, scratchpad size,
 threshold (smooth success probability), number of solutions (less variance),

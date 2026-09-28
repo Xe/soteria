@@ -79,9 +79,11 @@ pub enum Gadget {
     FoldTap,
     // Memory, latency-bound
     MemWalk,
+    // ALU, data-dependent rotate
+    VarRot,
 }
 
-pub const ALL: [Gadget; 33] = {
+pub const ALL: [Gadget; 34] = {
     use Gadget::*;
     [
         AddRot,
@@ -117,6 +119,7 @@ pub const ALL: [Gadget; 33] = {
         ShaFeistel,
         FoldTap,
         MemWalk,
+        VarRot,
     ]
 };
 
@@ -153,7 +156,7 @@ impl Mix {
                 self.alu,
                 &[
                     AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift, ChTap, MajTap,
-                    SigmaTap, MulAddTap,
+                    SigmaTap, MulAddTap, VarRot,
                 ],
             ),
             (self.taps, &[PopcntTap, ClzTap, MulHiTap, CmpMaskTap]),
@@ -552,6 +555,20 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
                 one(Ld, t, 0, 0, 64 + 4 * i),
                 one(Xor, x, x, t, 0),
             ]);
+        }
+        VarRot => {
+            // x = rotr(x + z, y & 31). WASM SIMD rotates every lane by the
+            // same scalar, so the per-lane amount is a barrel: bit b of y,
+            // shifted into the sign bit, guards a fixed rotate by 1 << b.
+            out.push(one(Add, x, x, z, 0));
+            for b in 0..5 {
+                let (t, p) = (tmp.r(), tmp.p());
+                out.extend([
+                    one(Shl, t, y, 0, 31 - b),
+                    one(CmpLt, p, t, 0, 0),
+                    vec![Slot::new(Rotr, x, x, 0, 1 << b).when(p)],
+                ]);
+            }
         }
         MemWalk => {
             // A chain of dependent loads: each address comes from the last

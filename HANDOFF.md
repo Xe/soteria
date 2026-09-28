@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 51 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 52 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 51 tests across the workspace, ~1 s
+cargo test --release                       # 52 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo test --release bench_solve -- --ignored --nocapture # solve time per Anubis difficulty, 4..=12
@@ -53,7 +53,7 @@ A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
 | `crates/soteria-isa/src/sched.rs` | List scheduler: sequential steps to bundles, respecting hazards |
 | `crates/soteria/src/lib.rs` | Re-exports the ISA. The VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`. wasm32 only |
 | `crates/soteria/src/sha4.rs` | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only) |
-| `crates/soteria/src/gadgets.rs` | The 33 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
+| `crates/soteria/src/gadgets.rs` | The 34 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
 | `crates/soteria/src/best.rs` | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate` |
 | `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
@@ -141,10 +141,10 @@ per sub-challenge, can't reuse compiled blocks either.
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad (up to 1 MiB), threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on, block 0 (one program). The default challenge is
-about 76 bundles and packs about 2.5 slots per bundle, but costs about 455
+about 79 bundles and packs about 2.5 slots per bundle, but costs about 458
 bundle-equivalents per attempt once `fill`, `fold` and `sha256` are charged
 for their real work (it was 361 before the 16 gadgets of roadmap item 7 and
-439 before `MemWalk`; `FoldTap` alone is about 129). `packing_stats` prints these.
+439 before `MemWalk`, 455 before `VarRot`; `FoldTap` alone is about 129). `packing_stats` prints these.
 `Challenge::attempt_cost` is bundles + `ROUND_COST` per 32-byte mix round
 (`fill`, `fold`) + `SHA_COST` per `sha256`. `expected_work` and `with_budget`
 use it. The two weights (0.25 and 13.0) were measured on the current

@@ -362,6 +362,37 @@ mod gadget_tests {
         }
     }
 
+    /// `VarRot` rotates each lane by its own amount. The gadget picks x, y
+    /// and z from the seed, so find the one word that changed and check it
+    /// against rotr(x + z, y & 31) for some other two words.
+    #[test]
+    fn var_rot_matches_scalar() {
+        for seed in 0..16 {
+            let prog = gadgets::solo(gadgets::Gadget::VarRot, seed);
+            let mut rng = crate::puzzle::SplitMix(seed ^ 0x5EED);
+            let mut vm = Vm::new(&[], 0, 100);
+            let before: [[u32; 4]; 16] = core::array::from_fn(|i| {
+                let v = core::array::from_fn(|_| if i == 0 { 0 } else { rng.next() as u32 });
+                vm.r[i] = from_lanes(v);
+                v
+            });
+            vm.run(&prog).unwrap();
+            let after = vm.r.map(lanes);
+            let changed: Vec<usize> = (1..=8).filter(|&i| after[i] != before[i]).collect();
+            assert_eq!(changed.len(), 1, "seed {seed}: one state word changes");
+            let x = changed[0];
+            let matches = (1..=8).filter(|&y| y != x).any(|y| {
+                (1..=8).filter(|&z| z != x && z != y).any(|z| {
+                    (0..4).all(|l| {
+                        let sum = before[x][l].wrapping_add(before[z][l]);
+                        after[x][l] == sum.rotate_right(before[y][l] & 31)
+                    })
+                })
+            });
+            assert!(matches, "seed {seed}: r{x} is not rotr(x + z, y & 31)");
+        }
+    }
+
     #[test]
     fn megabyte_scratchpad_solves_and_verifies() {
         let p = Params {
