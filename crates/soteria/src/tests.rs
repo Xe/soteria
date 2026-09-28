@@ -425,6 +425,47 @@ mod gadget_tests {
         });
     }
 
+    /// Memory taps address an L1 window, an L2 window or the whole
+    /// scratchpad. `solo` masks to 64 KiB, so L2 and the whole scratchpad
+    /// coincide there; L1 must stay below 16 KiB.
+    #[test]
+    fn memory_taps_use_tiered_windows() {
+        let mut rng = puzzle::SplitMix(0x7153);
+        let image: Vec<u8> = (0..1 << 16).map(|_| rng.next() as u8).collect();
+        let load = |a: u32| u32::from_le_bytes(image[a as usize..][..4].try_into().unwrap());
+        let mut tiers = HashSet::new();
+        for seed in 0..32 {
+            let prog = gadgets::solo(gadgets::Gadget::MemLoad, seed);
+            let window = prog
+                .bundles()
+                .iter()
+                .flatten()
+                .find(|s| s.op == Op::Li && s.d != 14)
+                .map_or(1 << 16, |s| s.imm as u32 + 1);
+            tiers.insert(window);
+            let mut vm = Vm::new(&image, 0, gadgets::fuel(&prog));
+            let before: [[u32; 4]; 9] =
+                core::array::from_fn(|_| core::array::from_fn(|_| rng.next() as u32));
+            for w in 1..=8 {
+                vm.r[w] = from_lanes(before[w]);
+            }
+            vm.run(&prog).unwrap();
+            let after = vm.r.map(lanes);
+            let x = (1..=8).find(|&i| after[i] != before[i]).expect("x changes");
+            let mask = (window - 1).min(0xFFFF) & !3;
+            let ok = (1..=8)
+                .filter(|&y| y != x)
+                .any(|y| (0..4).all(|l| after[x][l] == before[x][l] ^ load(before[y][l] & mask)));
+            assert!(ok, "seed {seed}: MemLoad with a {window}-byte window");
+        }
+        let want = [
+            gadgets::L1_WINDOW as u32,
+            gadgets::L2_WINDOW as u32,
+            1 << 16,
+        ];
+        assert_eq!(tiers, HashSet::from(want), "every tier occurs");
+    }
+
     #[test]
     fn megabyte_scratchpad_solves_and_verifies() {
         let p = Params {

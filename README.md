@@ -88,6 +88,9 @@ memory hazards (about 2.7 slots per bundle on the default mix). Float taps
 xor in the result's bits (`fbits`), not its truncated value, so they carry
 full 32-bit entropy. `MemWalk` is an 8-hop pointer chase: each address comes
 from the previous load, so it costs memory latency rather than throughput.
+The other memory taps address a 16 KiB window half the time, a 256 KiB
+window a quarter of the time and the whole scratchpad otherwise, like
+RandomX's L1/L2/L3 scratchpad levels.
 `VarRot` rotates by `y & 31` per lane, a barrel of five guarded fixed
 rotates, since WASM SIMD only shifts by a scalar. `CondRepeat` is the only
 loop: it runs two gadgets `1 + (3 bits of z)` times per lane, and the batch

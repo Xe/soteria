@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 55 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 56 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 55 tests across the workspace, ~1 s
+cargo test --release                       # 56 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo test --release bench_solve -- --ignored --nocapture # solve time per Anubis difficulty, 4..=12
@@ -141,11 +141,11 @@ per sub-challenge, can't reuse compiled blocks either.
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad (up to 1 MiB), threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on, block 0 (one program). The default challenge is
-about 96 bundles and packs about 2.4 slots per bundle, but costs about 529
+about 95 bundles and packs about 2.5 slots per bundle, but costs about 524
 bundle-equivalents per attempt once `fill`, `fold` and `sha256` are charged
 for their real work and loops for their expected iterations (it was 361
 before the 16 gadgets of roadmap item 7, 439 before `MemWalk`, 455 before
-`VarRot`, 458 before `CondRepeat`, 521 before `SMulHiTap` and 524 before `RsqrtTap`; `FoldTap` alone is about 129).
+`VarRot`, 458 before `CondRepeat`, 521 before `SMulHiTap`, 524 before `RsqrtTap` and 529 before tiered masks; `FoldTap` alone is about 129).
 `packing_stats` prints these. `Challenge::attempt_cost` is, per bundle,
 1 + `ROUND_COST` per 32-byte mix round (`fill`, `fold`) + `SHA_COST` per
 `sha256`, times `expected_repeats()` (about 6.86) inside a loop.
@@ -179,6 +179,7 @@ Registers: r0 = 0, r1..r8 state, r9..r13 temps (round-robin; r13 is the
 - **Fuel is not work.** `fill`, `fold` and `sha256` still cost 1 fuel each. Fuel only bounds execution; the work metric is `attempt_cost`. Its weights are interpreter-specific (see above).
 - **`CondRepeat` makes work per batch vary.** A batch's loop runs 1 to 8 times (mean about 6.86), so `attempt_cost` is an expectation, not an exact count. Verification is unaffected because the server reruns the batch, but a fixed-time solver budget sees more spread.
 - **The VM always takes 4 MiB**, whatever the scratchpad. The browser pays it once per worker. The Go verifier pays it per call because it makes a fresh instance each time: verify went from about 1.1 to 1.4 ms and from 4.3 to 8.0 MB allocated per call when `MEM_SIZE` went to 1 MiB (`BenchmarkVerify`). Pooling instances would fix both.
+- **Tiered masks are unmeasured where they matter.** Memory taps other than `MemWalk` use `tier_mask`: `L1_WINDOW` (16 KiB) half the time, `L2_WINDOW` (256 KiB) a quarter, the whole scratchpad otherwise, all clamped by `MASK`. `bench_scratchpad` on the M-series Mac shows no change in nonces/s at any size, as expected with large caches and interpreter overhead dominating. A phone with a small L2 is where it could show up.
 - **The work metric doesn't model cache misses.** A `MemWalk` hop costs 1 bundle in `attempt_cost` whether it hits L1 or DRAM. On the M-series Mac, ns per bundle-equivalent stays flat (12-15) from 16 KiB to 1 MiB, but a phone with a small L2 may not.
 - **`Vm::store` allocates a `Vec` per store** through its closure. Easy performance fix.
 - **The read phase loads every operand for every slot**, needed or not.

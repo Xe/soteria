@@ -257,6 +257,10 @@ pub const SHA_COST: f64 = 13.0;
 const STATE: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Dependent loads in one `MemWalk`.
 pub const WALK_HOPS: usize = 8;
+/// Address windows for memory taps, like RandomX's L1 and L2 scratchpad
+/// levels. Both are clamped to the scratchpad.
+pub const L1_WINDOW: i32 = 1 << 14;
+pub const L2_WINDOW: i32 = 1 << 18;
 /// Most iterations one lane of a `CondRepeat` asks for.
 pub const REPEAT_MAX: u32 = 8;
 /// Gadgets in a `CondRepeat` body.
@@ -410,6 +414,21 @@ fn emit_any(
         .push(crate::bundle(&[Slot::new(Bp, 0, q, 0, start)]));
 }
 
+/// A register holding this gadget's address mask: the L1 window half the
+/// time, L2 a quarter, the whole scratchpad a quarter. Most taps then stay
+/// in a cache-sized window while some still reach the whole arena. The mask
+/// doesn't depend on the state, so the scheduler can hoist it.
+fn tier_mask(rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec<Step>) -> u8 {
+    let window = match rng.below(4) {
+        0 | 1 => L1_WINDOW,
+        2 => L2_WINDOW,
+        _ => return MASK,
+    };
+    let m = tmp.r();
+    out.extend([one(Li, m, 0, 0, window - 1), one(And, m, m, MASK, 0)]);
+    m
+}
+
 /// Emit one straight-line gadget as sequential steps.
 pub(crate) fn emit(
     g: Gadget,
@@ -495,9 +514,10 @@ pub(crate) fn emit(
             ]);
         }
         MemLoad => {
+            let m = tier_mask(rng, tmp, out);
             let t = tmp.r();
             out.extend([
-                one(And, t, y, MASK, 0),
+                one(And, t, y, m, 0),
                 one(Ld, t, t, 0, 0),
                 one(Xor, x, x, t, 0),
             ]);
@@ -505,11 +525,12 @@ pub(crate) fn emit(
         MemScatter => {
             // Store y, then add in a load. Even if the addresses alias, x += y
             // is still invertible, which x ^= x would not be.
+            let m = tier_mask(rng, tmp, out);
             let (t1, t2) = (tmp.r(), tmp.r());
             out.extend([
-                one(And, t1, z, MASK, 0),
+                one(And, t1, z, m, 0),
                 one(St, 0, t1, y, 0),
-                one(And, t2, w, MASK, 0),
+                one(And, t2, w, m, 0),
                 one(Ld, t2, t2, 0, 0),
                 one(Add, x, x, t2, 0),
             ]);
@@ -668,20 +689,22 @@ pub(crate) fn emit(
         }
         MemChase => {
             // Two dependent loads: latency, not bandwidth.
+            let m = tier_mask(rng, tmp, out);
             let t = tmp.r();
             out.extend([
-                one(And, t, y, MASK, 0),
+                one(And, t, y, m, 0),
                 one(Ld, t, t, 0, 0),
-                one(And, t, t, MASK, 0),
+                one(And, t, t, m, 0),
                 one(Ld, t, t, 0, 0),
                 one(Xor, x, x, t, 0),
             ]);
         }
         MemRmw => {
             // mem[z] += y, then x ^= the new value.
+            let m = tier_mask(rng, tmp, out);
             let (t1, t2) = (tmp.r(), tmp.r());
             out.extend([
-                one(And, t1, z, MASK, 0),
+                one(And, t1, z, m, 0),
                 one(Ld, t2, t1, 0, 0),
                 one(Add, t2, t2, y, 0),
                 one(St, 0, t1, t2, 0),
@@ -689,10 +712,11 @@ pub(crate) fn emit(
             ]);
         }
         MemXorLoad => {
+            let m = tier_mask(rng, tmp, out);
             let t = tmp.r();
             out.extend([
                 one(Xor, t, y, z, 0),
-                one(And, t, t, MASK, 0),
+                one(And, t, t, m, 0),
                 one(Ld, t, t, 0, 0),
                 one(Sub, x, x, t, 0),
             ]);
@@ -755,7 +779,8 @@ pub(crate) fn emit(
             // latency each, which varies far less between phones and
             // desktops than ALU throughput does. Adding z between hops means
             // two states that land on the same word don't share the rest of
-            // the walk. Every loaded word goes into x.
+            // the walk. Every loaded word goes into x. The walk always spans
+            // the whole scratchpad: its point is the miss.
             let t = tmp.r();
             out.push(one(Xor, t, y, z, 0));
             for hop in 0..WALK_HOPS {
