@@ -159,6 +159,40 @@ fn nan_is_canonical() {
 }
 
 #[test]
+fn memory_addresses_are_twenty_bits() {
+    let s = Slot::new;
+    let prog = Program::new(vec![
+        bundle(&[
+            s(Op::Li, 1, 0, 0, 0x12345),
+            s(Op::Li, 2, 0, 0, 7),
+            s(Op::Li, 5, 0, 0, -1),
+            s(Op::Li, 6, 0, 0, 96),
+        ]),
+        // The top word of memory, and 64 KiB, which used to alias 0.
+        bundle(&[s(Op::St, 0, 0, 1, 0xFFFFC), s(Op::St, 0, 0, 2, 0x10000)]),
+        // 0x1FFFFC wraps to 0xFFFFC.
+        bundle(&[
+            s(Op::Ld, 3, 0, 0, 0x1FFFFC),
+            s(Op::Ld, 4, 0, 0, 0),
+            s(Op::Ld, 7, 0, 0, 0x10000),
+        ]),
+        // Fold all of memory.
+        bundle(&[s(Op::Fold, 0, 5, 6, 0)]),
+        bundle(&[s(Op::Halt, 0, 0, 0, 0)]),
+    ])
+    .unwrap();
+    let mut vm = Vm::new(&[], 0, 10);
+    vm.run(&prog).unwrap();
+    assert_eq!(lanes(vm.r[3]), [0x12345; 4]);
+    assert_eq!(lanes(vm.r[4]), [0; 4]);
+    assert_eq!(lanes(vm.r[7]), [7; 4]);
+    assert_eq!(vm.dirty, MEM_SIZE);
+    let mut before = vm.mem[..MEM_SIZE].to_vec();
+    before[96..128].fill(0);
+    assert_eq!(vm.mem[96..128], fold_lane(&before));
+}
+
+#[test]
 fn generated_puzzle_roundtrips_and_is_deterministic() {
     let a = puzzle::generate(42, 4, 6, 8);
     let b = puzzle::generate(42, 4, 6, 8);
@@ -249,7 +283,9 @@ mod gadget_tests {
     #[test]
     fn every_gadget_is_injective() {
         let mut rng = puzzle::SplitMix(0xABCD);
-        let image: Vec<u8> = (0..MEM_SIZE).map(|_| rng.next() as u8).collect();
+        // `solo` masks addresses to 64 KiB.
+        let image: Vec<u8> = (0..1 << 16).map(|_| rng.next() as u8).collect();
+        let mut vm = Vm::new(&image, 0, 64);
         for &g in &gadgets::ALL {
             for seed in 0..8 {
                 let prog = gadgets::solo(g, seed);
@@ -263,7 +299,7 @@ mod gadget_tests {
                     nudged[j] = nudged[j].wrapping_add(1 + (run as u32 & 7));
                     let random: [u32; 8] = core::array::from_fn(|_| rng.next() as u32);
                     let inputs = [base, swapped, nudged, random];
-                    let mut vm = Vm::new(&image, 0, 64);
+                    vm.reset(&image, 0, 64);
                     for w in 0..8 {
                         vm.r[1 + w] = from_lanes(core::array::from_fn(|l| inputs[l][w]));
                     }
@@ -276,6 +312,74 @@ mod gadget_tests {
                 }
             }
         }
+    }
+
+    /// A reused machine behaves like a fresh one, however much memory the
+    /// last run dirtied.
+    #[test]
+    fn reset_matches_new() {
+        let p = Params {
+            gadgets: 64,
+            mix: Mix {
+                memory: 8,
+                ..Default::default()
+            },
+            scratchpad: 1 << 18,
+            ..Default::default()
+        };
+        let c = Challenge::new(4, p);
+        let fuel = c.bundles() as u64;
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let mut reused = Vm::new(&a, 0, fuel);
+        reused.run(&c.program).unwrap();
+        assert!(reused.dirty >= 1 << 17, "{}", reused.dirty);
+        reused.reset(&b, 8, fuel);
+        reused.run(&c.program).unwrap();
+        let mut fresh = Vm::new(&b, 8, fuel);
+        fresh.run(&c.program).unwrap();
+        let regs = |vm: &Vm| {
+            (
+                vm.r.map(lanes),
+                vm.f.map(lanes),
+                vm.p.map(lanes),
+                vm.pc,
+                vm.fuel,
+            )
+        };
+        assert_eq!(regs(&reused), regs(&fresh));
+        assert!(reused.mem == fresh.mem);
+    }
+
+    /// Each `MemWalk` hop's address comes from the previous load, so even
+    /// scheduled, the gadget takes at least and, ld and add per hop.
+    #[test]
+    fn mem_walk_is_a_dependent_chain() {
+        for seed in 0..8 {
+            let prog = gadgets::solo(gadgets::Gadget::MemWalk, seed);
+            let loads = prog.bundles().iter().flatten();
+            assert_eq!(loads.filter(|s| s.op == Op::Ld).count(), gadgets::WALK_HOPS);
+            assert!(prog.bundles().len() >= 3 * gadgets::WALK_HOPS);
+        }
+    }
+
+    #[test]
+    fn megabyte_scratchpad_solves_and_verifies() {
+        let p = Params {
+            gadgets: 16,
+            mix: Mix {
+                memory: 8,
+                ..Default::default()
+            },
+            scratchpad: MEM_SIZE as u32,
+            threshold: 1 << 29,
+            solutions: 2,
+            ..Default::default()
+        };
+        let c = Challenge::new(6, p);
+        let challenge = [9u8; 32];
+        let nonces = c.solve(&challenge, 1 << 10).expect("solved");
+        assert!(c.verify(&challenge, &nonces), "{nonces:?}");
+        assert!(Challenge::new(6, p).verify(&challenge, &nonces));
     }
 
     #[test]
@@ -392,6 +496,41 @@ mod gadget_tests {
                 times[(RUNS * 9 / 10) as usize],
                 times[RUNS as usize - 1],
                 nonces as f64 / RUNS as f64,
+            );
+        }
+    }
+
+    /// Attempt cost and throughput by scratchpad size, the input to
+    /// choosing an arena size:
+    /// `cargo test --release bench_scratchpad -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_scratchpad() {
+        use std::time::Instant;
+        println!(
+            "{:>10} {:>10} {:>10} {:>10} {:>10}",
+            "scratchpad", "cost", "nonces/s", "us/nonce", "ns/cost"
+        );
+        for shift in [14, 16, 18, 20] {
+            let p = Params {
+                scratchpad: 1 << shift,
+                block: 8,
+                ..Default::default()
+            };
+            let c = Challenge::new(1, p);
+            let batches = (1u32 << 26 >> shift).max(16);
+            let t = Instant::now();
+            for b in 0..batches {
+                std::hint::black_box(c.attempt(&[1; 32], b * LANES as u32));
+            }
+            let per = t.elapsed().as_secs_f64() / (batches as usize * LANES) as f64;
+            println!(
+                "{:>7} KiB {:>10.0} {:>10.0} {:>10.1} {:>10.2}",
+                1 << (shift - 10),
+                c.attempt_cost(),
+                1.0 / per,
+                per * 1e6,
+                per * 1e9 / c.attempt_cost(),
             );
         }
     }
@@ -595,7 +734,8 @@ mod gadget_tests {
                 vm.run(&c.program).unwrap();
                 vm.mem[64..96].to_vec()
             };
-            let a = c.image(&sub);
+            let mut a = vec![0u8; c.params.scratchpad as usize];
+            a[..32].copy_from_slice(&sub);
             let mut b = a.clone();
             b[0x3000] ^= 1;
             assert_eq!(digest(&a) != digest(&b), fold, "fold={fold}");
@@ -606,7 +746,7 @@ mod gadget_tests {
     fn arena_depends_on_challenge_and_nonce() {
         let c = Challenge::new(2, Params::default());
         let arena = |sub: &[u8; 32], base: u32| {
-            let mut vm = Vm::new(&c.image(sub), base, c.bundles() as u64);
+            let mut vm = Vm::new(sub, base, c.bundles() as u64);
             vm.run(&c.program).unwrap();
             (0..LANES)
                 .map(|l| vm.mem[l * MEM_SIZE + 4096..][..64].to_vec())

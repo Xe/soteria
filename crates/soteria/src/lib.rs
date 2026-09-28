@@ -7,7 +7,7 @@
 //! - 16 × i32 registers `r0..r15` (`r15` starts as the lane's nonce)
 //! - 4 × f32 registers `f0..f3`
 //! - 16 × predicate registers `p0..p15` (`p0` is hardwired true, `p15` is the result)
-//! - 64 KiB of byte-addressed little-endian memory
+//! - 1 MiB of byte-addressed little-endian memory (20-bit addresses)
 //!
 //! Bundle semantics: every slot reads the state as it was at the start of the
 //! bundle, then all writes commit in slot order (later slots win on conflicts).
@@ -122,6 +122,9 @@ pub fn fill_lane(key: &[u8; 32], out: &mut [u8]) {
     }
 }
 
+/// Address mask: every memory access wraps within a lane's `MEM_SIZE` bytes.
+const ADDR: u32 = MEM_SIZE as u32 - 1;
+
 /// First byte `fill` writes: below it live the challenge, nonce and hash block.
 pub const ARENA_START: usize = 128;
 
@@ -156,30 +159,47 @@ pub struct Vm {
     pub pc: u32,
     pub fuel: u64,
     pub halted: bool,
+    /// Every lane's bytes from here up are still zero, so `reset` only has
+    /// to clear below it. Anything that writes `mem` directly must raise it.
+    pub dirty: usize,
 }
 
 impl Vm {
     /// Fresh machine: every lane gets a copy of `image`, and `r15` holds
     /// `nonce_base + lane`.
     pub fn new(image: &[u8], nonce_base: u32, fuel: u64) -> Self {
-        assert!(image.len() <= MEM_SIZE);
-        let mut mem = vec![0u8; LANES * MEM_SIZE];
-        for lane in mem.chunks_exact_mut(MEM_SIZE) {
-            lane[..image.len()].copy_from_slice(image);
-        }
-        let mut r = [u32x4_splat(0); 16];
-        r[NONCE_REG] = from_lanes(core::array::from_fn(|l| nonce_base.wrapping_add(l as u32)));
-        let mut p = [u32x4_splat(0); 16];
-        p[0] = u32x4_splat(!0);
-        Vm {
-            r,
+        let mut vm = Vm {
+            r: [u32x4_splat(0); 16],
             f: [f32x4_splat(0.0); 4],
-            p,
-            mem,
+            p: [u32x4_splat(0); 16],
+            mem: vec![0u8; LANES * MEM_SIZE],
             pc: 0,
             fuel,
             halted: false,
+            dirty: 0,
+        };
+        vm.reset(image, nonce_base, fuel);
+        vm
+    }
+
+    /// Put the machine in the state `new` would, reusing its memory. Only
+    /// the bytes below `dirty` are cleared, so a run that touched a small
+    /// scratchpad resets in time proportional to it, not to `MEM_SIZE`.
+    pub fn reset(&mut self, image: &[u8], nonce_base: u32, fuel: u64) {
+        assert!(image.len() <= MEM_SIZE);
+        for lane in self.mem.chunks_exact_mut(MEM_SIZE) {
+            lane[..image.len()].copy_from_slice(image);
+            lane[image.len()..self.dirty.max(image.len())].fill(0);
         }
+        self.dirty = image.len();
+        self.r = [u32x4_splat(0); 16];
+        self.r[NONCE_REG] = from_lanes(core::array::from_fn(|l| nonce_base.wrapping_add(l as u32)));
+        self.f = [f32x4_splat(0.0); 4];
+        self.p = [u32x4_splat(0); 16];
+        self.p[0] = u32x4_splat(!0);
+        self.pc = 0;
+        self.fuel = fuel;
+        self.halted = false;
     }
 
     fn guard(&self, g: u8) -> v128 {
@@ -206,7 +226,7 @@ impl Vm {
     fn load32(&self, addr: v128) -> v128 {
         let a = lanes(addr);
         from_lanes(core::array::from_fn(|l| {
-            let o = l * MEM_SIZE + (a[l] as usize & 0xFFFC);
+            let o = l * MEM_SIZE + (a[l] & ADDR & !3) as usize;
             u32::from_le_bytes(self.mem[o..o + 4].try_into().unwrap())
         }))
     }
@@ -214,7 +234,7 @@ impl Vm {
     fn fold(&self, len_mask: v128) -> [[u8; 32]; LANES] {
         let m = lanes(len_mask);
         core::array::from_fn(|l| {
-            let len = (((m[l] & 0xFFFF) + 1) & !31).max(32) as usize;
+            let len = (((m[l] & ADDR) + 1) & !31).max(32) as usize;
             fold_lane(&self.mem[l * MEM_SIZE..][..len])
         })
     }
@@ -222,7 +242,7 @@ impl Vm {
     fn sha(&self, src: v128) -> [[u8; 32]; LANES] {
         let a = lanes(src);
         let blocks: [&[u8; 64]; LANES] = core::array::from_fn(|l| {
-            let o = l * MEM_SIZE + (a[l] as usize & 0xFFC0);
+            let o = l * MEM_SIZE + (a[l] & ADDR & !63) as usize;
             self.mem[o..o + 64].try_into().unwrap()
         });
         sha4::sha256x4(blocks)
@@ -233,8 +253,9 @@ impl Vm {
         for l in 0..LANES {
             if m[l] != 0 {
                 let data = bytes(l);
-                let o = l * MEM_SIZE + (a[l] & (0xFFFF & !(align - 1))) as usize;
-                self.mem[o..o + data.len()].copy_from_slice(&data);
+                let o = (a[l] & ADDR & !(align - 1)) as usize;
+                self.mem[l * MEM_SIZE + o..][..data.len()].copy_from_slice(&data);
+                self.dirty = self.dirty.max(o + data.len());
             }
         }
     }
@@ -344,10 +365,10 @@ impl Vm {
                     let (m, k) = (lanes(ra), lanes(rb));
                     Write::Fill(
                         core::array::from_fn(|l| {
-                            let o = l * MEM_SIZE + (k[l] as usize & 0xFFE0);
+                            let o = l * MEM_SIZE + (k[l] & ADDR & !31) as usize;
                             self.mem[o..o + 32].try_into().unwrap()
                         }),
-                        core::array::from_fn(|l| (((m[l] & 0xFFFF) + 1) & !31) as usize),
+                        core::array::from_fn(|l| (((m[l] & ADDR) + 1) & !31) as usize),
                     )
                 }
             };
@@ -375,6 +396,7 @@ impl Vm {
                                 &keys[l],
                                 &mut self.mem[l * MEM_SIZE..][ARENA_START..lens[l]],
                             );
+                            self.dirty = self.dirty.max(lens[l]);
                         }
                     }
                 }
@@ -415,10 +437,13 @@ pub fn attempt(
 
 /// Client side: search batches until a lane solves. Trapping batches are skipped.
 pub fn solve(prog: &Program, image: &[u8], fuel: u64, max_batches: u32) -> Option<u32> {
+    let mut vm = Vm::new(image, 0, fuel);
     (0..max_batches).find_map(|batch| {
         let base = batch * LANES as u32;
-        let solved = attempt(prog, image, base, fuel).ok()?;
-        solved.iter().position(|&s| s).map(|l| base + l as u32)
+        vm.reset(image, base, fuel);
+        vm.run(prog).ok()?;
+        let solved = lanes(vm.p[RESULT_PRED]);
+        solved.iter().position(|&s| s != 0).map(|l| base + l as u32)
     })
 }
 

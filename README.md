@@ -14,7 +14,7 @@ cargo test --release   # builds for wasm32-wasip1 with +simd128, runs under wasm
 | i32 registers | 16 | `r15` starts as the lane's nonce |
 | f32 registers | 4 | NaNs canonicalized to `0x7FC00000` |
 | predicates | 16 | `p0` hardwired true, `p15` = solved |
-| memory | 64 KiB per lane | little-endian, addresses masked to 16 bits |
+| memory | 1 MiB per lane | little-endian, addresses masked to 20 bits |
 
 Each `v128` register holds one value per lane, so one bundle runs four nonces.
 A bundle is 4 slots × 8 bytes: `op, guard, d, a<<4|b, imm:i32le`. The guard
@@ -37,8 +37,8 @@ All slots read pre-bundle state, then writes commit in slot order. That means
 | `popcnt d, a` | count set bits (`i8x16.popcnt` + two pairwise adds) |
 | `ld d, [a + imm]` / `st [a + imm], b` | 32-bit, 4-byte aligned |
 | `sha256 a, b` | `mem[rb..+32] = sha256(mem[ra..+64])`, 64/32-byte aligned |
-| `fill a, [b]` | `mem[128..(ra & 0xFFFF)+1] = expand(mem[rb..+32])`, sequential keyed stream |
-| `fold a, b` | `mem[rb..+32] = fold(mem[0..(ra & 0xFFFF)+1])`, ordered ARX-multiply fold of the scratchpad |
+| `fill a, [b]` | `mem[128..(ra & 0xFFFFF)+1] = expand(mem[rb..+32])`, sequential keyed stream |
+| `fold a, b` | `mem[rb..+32] = fold(mem[0..(ra & 0xFFFFF)+1])`, ordered ARX-multiply fold of the scratchpad |
 | `cmpeq cmplt cmpltu pd, a, b` | integer compares into predicates |
 | `pand por pxor pd, pa, pb` / `pnot pd, pa` | predicate logic |
 | `pmov d, pa` | `rd = pa ? -1 : 0` |
@@ -69,14 +69,14 @@ gadgets over the state `r1..r8` → `sha256(state ‖ fold(scratchpad))` →
 compare the first word to a threshold. The fold means every store reaches the
 digest, so an attacker's compiler can't delete stores as dead code. Before the
 gadgets run, `fill` expands `sha256(challenge ‖ nonce)` into the arena, so
-memory is different for every challenge and every nonce. There are 32 gadgets:
+memory is different for every challenge and every nonce. There are 33 gadgets:
 
 | Group | Gadgets |
 |---|---|
 | ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap` |
 | Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap` |
 | Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap` |
-| Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad` |
+| Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad`, `MemWalk` |
 | Lane movement | `CondSwap`, `WordRotate`, `CondNegate`, `CondWordRotate` |
 | Expensive | `ShaAnchor`, `ShaFeistel`, `FoldTap` |
 
@@ -86,7 +86,8 @@ can't collapse the state space. Gadgets emit sequential steps; the list
 scheduler packs them into bundles around register, predicate, float and
 memory hazards (about 2.7 slots per bundle on the default mix). Float taps
 xor in the result's bits (`fbits`), not its truncated value, so they carry
-full 32-bit entropy.
+full 32-bit entropy. `MemWalk` is an 8-hop pointer chase: each address comes
+from the previous load, so it costs memory latency rather than throughput.
 
 Difficulty axes (`Params`): gadget count, category mix, scratchpad size,
 threshold (smooth success probability), number of solutions (less variance),
@@ -97,8 +98,9 @@ attacker who compiles programs pays for a compile every 2^k nonces. Building a
 default program costs about half a batch attempt in the interpreter.
 `cargo test --release bench_solve -- --ignored --nocapture` times solves
 under wasmtime for Anubis difficulties 4 through 12, where difficulty d is
-2^d expected attempts (about 100k nonces/s, 41 ms at difficulty 12, on an
-M-series Mac).
+2^d expected attempts (about 129k nonces/s, 32 ms at difficulty 12, on an
+M-series Mac). `bench_scratchpad` does the same for scratchpads of 16 KiB to
+1 MiB, where `fill` and `fold` dominate the cost.
 `Challenge::with_budget` picks the threshold so expected work equals a given
 number of bundle-equivalents: bundles plus the real cost of `fill`, `fold`
 and `sha256`, which take 1 fuel each but do far more work (`attempt_cost`).

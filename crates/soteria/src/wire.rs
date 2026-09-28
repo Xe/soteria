@@ -7,7 +7,7 @@
 //!  0  seed        u64
 //!  8  gadgets     u32   <= MAX_GADGETS
 //! 12  mix         u32 x 6: alu, taps, float, memory, lanes, sha (each <= 65536, sum > 0)
-//! 36  scratchpad  u32   power of two in 256..=65536
+//! 36  scratchpad  u32   power of two in 256..=MEM_SIZE (1 MiB)
 //! 40  threshold   u32   > 0
 //! 44  solutions   u32   1..=MAX_SOLUTIONS
 //! 48  flags       u32   bit 0 chained, bit 1 fold, bit 2 fill,

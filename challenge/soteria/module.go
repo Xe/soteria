@@ -28,10 +28,11 @@ type module struct {
 // creating runtimes concurrently is a data race.
 var wasmRuntime = sync.OnceValue(func() wazero.Runtime {
 	// CloseOnContextDone makes a context deadline interrupt a running call.
-	// The modules need well under 1 MiB; 64 pages is a cap, not a reservation.
+	// The VM takes 4 MiB (1 MiB per lane) and the rest is well under 1 MiB;
+	// 128 pages (8 MiB) is a cap, not a reservation.
 	cfg := wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
-		WithMemoryLimitPages(64)
+		WithMemoryLimitPages(128)
 
 	return wazero.NewRuntimeWithConfig(context.Background(), cfg)
 })

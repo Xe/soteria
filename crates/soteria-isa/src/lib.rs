@@ -8,7 +8,8 @@ pub mod disasm;
 pub mod sched;
 
 pub const LANES: usize = 4;
-pub const MEM_SIZE: usize = 1 << 16;
+/// Bytes of memory per lane. Addresses are masked to 20 bits.
+pub const MEM_SIZE: usize = 1 << 20;
 pub const NONCE_REG: usize = 15;
 pub const RESULT_PRED: usize = 15;
 pub const SLOTS: usize = 4;
@@ -41,11 +42,11 @@ ops! {
     Shl, Shr, Rotr,
     /// rd = count_leading_zeros(ra)
     Clz,
-    /// rd = mem32[(ra + imm) & 0xFFFC]
+    /// rd = mem32[(ra + imm) & 0xFFFFC]
     Ld,
-    /// mem32[(ra + imm) & 0xFFFC] = rb
+    /// mem32[(ra + imm) & 0xFFFFC] = rb
     St,
-    /// mem[rb & 0xFFE0 ..][..32] = sha256(mem[ra & 0xFFC0 ..][..64])
+    /// mem[rb & 0xFFFE0 ..][..32] = sha256(mem[ra & 0xFFFC0 ..][..64])
     Sha256,
     /// pd = ra OP rb (signed, signed, unsigned)
     CmpEq, CmpLt, CmpLtu,
@@ -79,11 +80,11 @@ ops! {
     /// fd = ra reinterpreted as f32. Any odd NaN payload is canonicalized by
     /// the next float arithmetic op that consumes it.
     FFrom,
-    /// mem[rb & 0xFFE0 ..][..32] = fold(mem[0 .. (ra & 0xFFFF) + 1]).
+    /// mem[rb & 0xFFFE0 ..][..32] = fold(mem[0 .. (ra & 0xFFFFF) + 1]).
     /// Makes every byte of the scratchpad reach the digest, so stores that
     /// are never loaded again can't be deleted as dead code.
     Fold,
-    /// mem[128 .. (ra & 0xFFFF) + 1] = expand(mem[rb & 0xFFE0 ..][..32]).
+    /// mem[128 .. (ra & 0xFFFFF) + 1] = expand(mem[rb & 0xFFFE0 ..][..32]).
     /// Fills the arena from a per-attempt key, so memory differs per nonce.
     Fill,
     /// rd = (ra as u64 * rb as u64) >> 32, the high half of an unsigned

@@ -59,7 +59,7 @@ fn random_slot(rng: &mut SplitMix) -> Slot {
         Addi => Slot::new(op, dst, src(rng), 0, imm),
         Shl | Shr | Rotr => Slot::new(op, dst, src(rng), 0, 1 + rng.below(31) as i32),
         Clz | Bswap | Popcnt => Slot::new(op, dst, src(rng), 0, 0),
-        // Data-dependent addresses: the 64 KiB scratchpad becomes part of the state.
+        // Data-dependent addresses: the whole memory becomes part of the state.
         Ld => Slot::new(op, dst, src(rng), 0, imm & 0xFFFF),
         St => Slot::new(op, 0, src(rng), src(rng), imm & 0xFFFF),
         CmpEq | CmpLt | CmpLtu => Slot::new(op, pred(rng), src(rng), src(rng), 0),

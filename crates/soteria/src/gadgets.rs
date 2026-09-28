@@ -77,9 +77,11 @@ pub enum Gadget {
     // Expensive
     ShaFeistel,
     FoldTap,
+    // Memory, latency-bound
+    MemWalk,
 }
 
-pub const ALL: [Gadget; 32] = {
+pub const ALL: [Gadget; 33] = {
     use Gadget::*;
     [
         AddRot,
@@ -114,6 +116,7 @@ pub const ALL: [Gadget; 32] = {
         CondWordRotate,
         ShaFeistel,
         FoldTap,
+        MemWalk,
     ]
 };
 
@@ -157,7 +160,7 @@ impl Mix {
             (self.float, &[SqrtTap, DivTap, FMulTap, FAddTap, HypotTap]),
             (
                 self.memory,
-                &[MemLoad, MemScatter, MemChase, MemRmw, MemXorLoad],
+                &[MemLoad, MemScatter, MemChase, MemRmw, MemXorLoad, MemWalk],
             ),
             (
                 self.lanes,
@@ -184,7 +187,8 @@ pub struct Params {
     /// Number of gadgets: linear cost per attempt.
     pub gadgets: usize,
     pub mix: Mix,
-    /// Scratchpad bytes, a power of two in 256..=65536: memory footprint.
+    /// Scratchpad bytes, a power of two in 256..=MEM_SIZE (1 MiB): memory
+    /// footprint. Past the CPU caches, `MemWalk` hops become cache misses.
     pub scratchpad: u32,
     /// Success iff the first digest word (big-endian) is below this:
     /// probability threshold / 2^32, so difficulty scales smoothly.
@@ -232,6 +236,8 @@ pub const ROUND_COST: f64 = 0.25;
 pub const SHA_COST: f64 = 13.0;
 
 const STATE: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+/// Dependent loads in one `MemWalk`.
+pub const WALK_HOPS: usize = 8;
 const MASK: u8 = 14;
 
 pub(crate) struct Temps {
@@ -547,6 +553,26 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
                 one(Xor, x, x, t, 0),
             ]);
         }
+        MemWalk => {
+            // A chain of dependent loads: each address comes from the last
+            // loaded word, so the hops can't overlap and cost a memory
+            // latency each, which varies far less between phones and
+            // desktops than ALU throughput does. Adding z between hops means
+            // two states that land on the same word don't share the rest of
+            // the walk. Every loaded word goes into x.
+            let t = tmp.r();
+            out.push(one(Xor, t, y, z, 0));
+            for hop in 0..WALK_HOPS {
+                if hop > 0 {
+                    out.push(one(Add, t, t, z, 0));
+                }
+                out.extend([
+                    one(And, t, t, MASK, 0),
+                    one(Ld, t, t, 0, 0),
+                    one(Add, x, x, t, 0),
+                ]);
+            }
+        }
         FoldTap => {
             // Fold the scratchpad mid-program, so stores before this point
             // matter twice and the fold can't be deferred to the end.
@@ -574,6 +600,9 @@ pub struct Challenge {
     /// The last block program built, keyed by its seed. Callers walk nonces
     /// in order, so one entry is enough.
     cache: RefCell<Option<(u64, Program)>>,
+    /// Reused between attempts: a fresh `Vm` would zero all of `MEM_SIZE`
+    /// in every lane, `reset` only what the last run touched.
+    vm: RefCell<Option<Vm>>,
 }
 
 /// Program seed for nonce block `block` of sub-challenge `sub`. Distinct
@@ -615,6 +644,7 @@ impl Challenge {
             program,
             unscheduled,
             cache: RefCell::new(None),
+            vm: RefCell::new(None),
         }
     }
 
@@ -649,12 +679,6 @@ impl Challenge {
         self.attempt_cost()
             * (4_294_967_296.0 / self.params.threshold as f64)
             * self.params.solutions as f64
-    }
-
-    pub(crate) fn image(&self, sub: &[u8; 32]) -> Vec<u8> {
-        let mut m = vec![0u8; self.params.scratchpad as usize];
-        m[..32].copy_from_slice(sub);
-        m
     }
 
     /// The program nonce `nonce` of sub-challenge `sub` runs.
@@ -692,7 +716,16 @@ impl Challenge {
         sub: &[u8; 32],
         base: u32,
     ) -> Option<[(bool, [u8; 32]); LANES]> {
-        let mut vm = Vm::new(&self.image(sub), base, program.bundles().len() as u64);
+        // The memory image is the sub-challenge, then zeros.
+        let fuel = program.bundles().len() as u64;
+        let mut slot = self.vm.borrow_mut();
+        let vm = match slot.as_mut() {
+            Some(vm) => {
+                vm.reset(sub, base, fuel);
+                vm
+            }
+            None => slot.insert(Vm::new(sub, base, fuel)),
+        };
         vm.run(program).ok()?;
         let solved = lanes(vm.p[15]);
         Some(core::array::from_fn(|l| {
