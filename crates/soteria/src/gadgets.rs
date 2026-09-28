@@ -24,7 +24,8 @@
 //! Registers: r0 = 0, r1..r8 = state, r9..r13 = temps (r13 is the
 //! `CondRepeat` counter inside its loop), r14 = scratchpad mask, r15 = nonce.
 //! p1..p6 = temps, p15 = solved. f0..f3 = temps.
-//! Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
+//! Memory: 0..32 challenge, 32..36 nonce, 40..48 float state (`FSTATE`),
+//! 64..128 hash block,
 //! 128..scratchpad the arena, expanded from sha256(challenge || nonce).
 
 use crate::puzzle::SplitMix;
@@ -90,9 +91,12 @@ pub enum Gadget {
     RsqrtTap,
     // Memory: a register-file exchange
     MemBlock,
+    // Float state carried across gadgets
+    FStateMix,
+    FStateTap,
 }
 
-pub const ALL: [Gadget; 38] = {
+pub const ALL: [Gadget; 40] = {
     use Gadget::*;
     [
         AddRot,
@@ -133,6 +137,8 @@ pub const ALL: [Gadget; 38] = {
         SMulHiTap,
         RsqrtTap,
         MemBlock,
+        FStateMix,
+        FStateTap,
     ]
 };
 
@@ -178,7 +184,9 @@ impl Mix {
             ),
             (
                 self.float,
-                &[SqrtTap, DivTap, FMulTap, FAddTap, HypotTap, RsqrtTap],
+                &[
+                    SqrtTap, DivTap, FMulTap, FAddTap, HypotTap, RsqrtTap, FStateMix, FStateTap,
+                ],
             ),
             (
                 self.memory,
@@ -271,6 +279,10 @@ pub const REPEAT_MAX: u32 = 8;
 /// Gadgets in a `CondRepeat` body.
 pub const REPEAT_BODY: usize = 2;
 const MASK: u8 = 14;
+/// Two f32 words of float state, like RandomX's F registers but in memory:
+/// every float register is a temp. Zero until a `FStateMix`, and `fold`
+/// covers them.
+pub const FSTATE: i32 = 40;
 /// `CondRepeat`'s counter, taken out of the temps while its body runs.
 const COUNTER: u8 = 13;
 
@@ -677,6 +689,39 @@ pub(crate) fn emit(
                 one(FMul, fw, fg, fw, 0),
                 one(FBits, a, fw, 0, 0),
                 one(Xor, x, x, a, 0),
+            ]);
+        }
+        FStateMix => {
+            // F_i ^= fbits(F_j op y): float arithmetic on the other word, so
+            // rounding carries along the F0 -> F1 -> F0 chain, but the
+            // update is an xor and can be undone. y is raw bits, as in
+            // FAddTap. The state words are untouched.
+            let i = rng.below(2) as i32;
+            let op = [FAdd, FSub, FMul][rng.below(3) as usize];
+            let (t, u, fa, fb) = (tmp.r(), tmp.r(), tmp.f(), tmp.f());
+            out.extend([
+                one(Ld, t, 0, 0, FSTATE + 4 * (1 - i)),
+                one(FFrom, fa, t, 0, 0),
+                one(FFrom, fb, y, 0, 0),
+                one(op, fa, fa, fb, 0),
+                one(FBits, t, fa, 0, 0),
+                one(Ld, u, 0, 0, FSTATE + 4 * i),
+                one(Xor, u, u, t, 0),
+                one(St, 0, 0, u, FSTATE + 4 * i),
+            ]);
+        }
+        FStateTap => {
+            // x += fbits(F_i op y): the float state reaches the state words.
+            let i = rng.below(2) as i32;
+            let op = [FAdd, FMul][rng.below(2) as usize];
+            let (t, fa, fb) = (tmp.r(), tmp.f(), tmp.f());
+            out.extend([
+                one(Ld, t, 0, 0, FSTATE + 4 * i),
+                one(FFrom, fa, t, 0, 0),
+                one(FFrom, fb, y, 0, 0),
+                one(op, fa, fa, fb, 0),
+                one(FBits, t, fa, 0, 0),
+                one(Add, x, x, t, 0),
             ]);
         }
         HypotTap => {

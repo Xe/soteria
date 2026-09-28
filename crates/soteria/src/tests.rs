@@ -509,6 +509,72 @@ mod gadget_tests {
         }
     }
 
+    /// `FStateMix` xors float arithmetic on one float-state word and a state
+    /// word into the other float-state word; `FStateTap` adds float
+    /// arithmetic on a float-state word into x.
+    #[test]
+    fn float_state_matches_scalar() {
+        use gadgets::{Gadget, FSTATE};
+        let canon = |r: f32| if r.is_nan() { 0x7FC0_0000 } else { r.to_bits() };
+        let ops: [fn(f32, f32) -> f32; 3] = [|a, b| a + b, |a, b| a - b, |a, b| a * b];
+        let mut rng = puzzle::SplitMix(0xF57A);
+        for seed in 0..16 {
+            for g in [Gadget::FStateMix, Gadget::FStateTap] {
+                let prog = gadgets::solo(g, seed);
+                let image: Vec<u8> = (0..64).map(|_| rng.next() as u8).collect();
+                let mut vm = Vm::new(&image, 0, gadgets::fuel(&prog));
+                let before: [[u32; 4]; 9] =
+                    core::array::from_fn(|_| core::array::from_fn(|_| rng.next() as u32));
+                for w in 1..=8 {
+                    vm.r[w] = from_lanes(before[w]);
+                }
+                vm.run(&prog).unwrap();
+                let after = vm.r.map(lanes);
+                let f = |mem: &[u8], i: usize| {
+                    let a = FSTATE as usize + 4 * i;
+                    u32::from_le_bytes(mem[a..a + 4].try_into().unwrap())
+                };
+                let changed: Vec<usize> = (1..=8).filter(|&i| after[i] != before[i]).collect();
+                let ok = if g == Gadget::FStateMix {
+                    assert!(
+                        changed.is_empty(),
+                        "seed {seed}: FStateMix leaves r1..r8 alone"
+                    );
+                    (0..2).any(|i| {
+                        ops.iter().any(|op| {
+                            (1..=8).any(|y| {
+                                (0..4).all(|l| {
+                                    let mem = &vm.mem[l * MEM_SIZE..];
+                                    let other = f32::from_bits(f(&image, 1 - i));
+                                    let r = op(other, f32::from_bits(before[y][l]));
+                                    f(mem, i) == f(&image, i) ^ canon(r)
+                                        && f(mem, 1 - i) == f(&image, 1 - i)
+                                })
+                            })
+                        })
+                    })
+                } else {
+                    assert_eq!(changed.len(), 1, "seed {seed}: FStateTap changes x");
+                    let x = changed[0];
+                    (0..2).any(|i| {
+                        [ops[0], ops[2]].iter().any(|op| {
+                            (1..=8).filter(|&y| y != x).any(|y| {
+                                (0..4).all(|l| {
+                                    let r = op(
+                                        f32::from_bits(f(&image, i)),
+                                        f32::from_bits(before[y][l]),
+                                    );
+                                    after[x][l] == before[x][l].wrapping_add(canon(r))
+                                })
+                            })
+                        })
+                    })
+                };
+                assert!(ok, "{g:?} seed {seed}: doesn't match the scalar reference");
+            }
+        }
+    }
+
     #[test]
     fn megabyte_scratchpad_solves_and_verifies() {
         let p = Params {
