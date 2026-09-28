@@ -109,15 +109,26 @@ devices earn partial credit instead of nothing.
 round-trips. It's two passes: the first records which bundle each label
 points at, the second parses slots against a per-opcode operand signature.
 
-## Host ABI (`soteria-ffi`)
+## Client and server modules (`soteria-client`, `soteria-server`)
 
-`cargo build --release -p soteria-ffi --target wasm32-unknown-unknown` produces a core
-module with no imports for hosts such as wazero. The host gets a buffer from
-`soteria_alloc(len)`, writes a request (seed, params, challenge, nonces; the
-layout is in the `ffi.rs` module docs) and calls `soteria_verify` (1 or 0) or
-`soteria_verify_best` (credited attempts). Both free the buffer. Negative
-results mean a malformed request. `soteria_fingerprint` returns the opcode
-numbering fingerprint to compare with the client build.
+`cargo build --release -p soteria-client -p soteria-server --target wasm32-unknown-unknown`
+produces two core modules with no imports: `soteria_client.wasm` solves (for
+browsers) and `soteria_server.wasm` verifies (for wazero). In both, the host
+gets a buffer from `soteria_alloc(len)` and writes a request in the
+`soteria::wire` layout (seed, params, challenge, then nonces for the server).
+Negative results mean a malformed request, and `soteria_fingerprint` returns
+the opcode numbering so the server can reject a client from another build.
+
+The server's `soteria_verify` returns 1 or 0, and `soteria_verify_best`
+returns the credited attempts. The client runs in steps so a Web Worker can
+check its deadline:
+
+```js
+client.soteria_search(ptr, len, 32);               // or soteria_solve(ptr, len)
+while (performance.now() < deadline && client.soteria_step(16) === 0) {}
+const nonces = new Uint32Array(client.memory.buffer,
+  client.soteria_nonces(), client.soteria_nonces_len());
+```
 
 ## Tools (`soteria-cli`)
 

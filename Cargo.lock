@@ -222,7 +222,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "soteria-ffi"
+name = "soteria-client"
 version = "0.1.0"
 dependencies = [
  "soteria",
@@ -231,6 +231,13 @@ dependencies = [
 [[package]]
 name = "soteria-isa"
 version = "0.1.0"
+
+[[package]]
+name = "soteria-server"
+version = "0.1.0"
+dependencies = [
+ "soteria",
+]
 
 [[package]]
 name = "strsim"

@@ -383,6 +383,28 @@ mod gadget_tests {
         println!("sha256x4 {:.2} bundles", sha / bundle);
     }
 
+    /// Resuming between any two batches finds exactly what `solve` finds.
+    #[test]
+    fn solver_steps_match_solve() {
+        use crate::gadgets::{Progress, Solver};
+        for chained in [false, true] {
+            let p = Params {
+                threshold: 1 << 27,
+                solutions: 3,
+                chained,
+                ..Default::default()
+            };
+            let (c, challenge) = (Challenge::new(8, p), [3u8; 32]);
+            let want = c.solve(&challenge, 100_000).unwrap();
+            for chunk in [1, 2, 7, 1000] {
+                let mut s = Solver::new(&c, &challenge);
+                assert_eq!(s.step(&c, 0), Progress::Working);
+                while s.step(&c, chunk) == Progress::Working {}
+                assert_eq!(s.nonces(), want, "chained={chained} chunk={chunk}");
+            }
+        }
+    }
+
     #[test]
     fn fuel_is_exact_and_budget_hits_target() {
         let c = Challenge::with_budget(
@@ -799,5 +821,52 @@ mod best_tests {
         rev.reverse();
         assert_eq!(c.verify_best(&challenge, &rev), Some(credit));
         assert!(best::estimate(8, u64::MAX) > 6.9 && best::estimate(8, 0).is_finite());
+    }
+}
+
+mod wire_tests {
+    use crate::gadgets::Params;
+    use crate::wire::*;
+
+    /// Pins the byte layout the Go side writes.
+    #[test]
+    fn request_layout_is_stable() {
+        let p = Params {
+            gadgets: 3,
+            threshold: 0x0102_0304,
+            chained: true,
+            ..Default::default()
+        };
+        let req = request(0x1122_3344_5566_7788, &p, &[0xAA; 32], &[5, 0xDEAD_BEEF]);
+        let hex: String = req.iter().map(|b| format!("{b:02x}")).collect();
+        let want = [
+            "8877665544332211",                                   // seed
+            "03000000",                                           // gadgets
+            "08000000030000000200000003000000020000000100000000", // mix (+ first byte of scratchpad)
+        ];
+        assert!(hex.starts_with(&want.concat()), "{hex}");
+        assert_eq!(req.len(), HEADER + 8);
+        assert_eq!(
+            &req[36..52],
+            [0, 0x40, 0, 0, 4, 3, 2, 1, 1, 0, 0, 0, 7, 0, 0, 0]
+        );
+        assert_eq!(&req[52..84], [0xAA; 32]);
+        assert_eq!(&req[84..], [5, 0, 0, 0, 0xEF, 0xBE, 0xAD, 0xDE]);
+    }
+
+    #[test]
+    fn parse_inverts_request() {
+        let p = Params {
+            gadgets: 7,
+            solutions: 3,
+            fold: false,
+            ..Default::default()
+        };
+        let r = parse(&request(42, &p, &[9; 32], &[1, 2, 3])).ok().unwrap();
+        assert_eq!(
+            (r.seed, r.challenge, r.nonces),
+            (42, [9; 32], vec![1, 2, 3])
+        );
+        assert_eq!(format!("{:?}", r.params), format!("{p:?}"));
     }
 }

@@ -6,24 +6,24 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,500 lines across 4 crates, 39 tests passing (plus 1 ignored benchmark). Nothing is wired
+Status: working prototype, about 3,900 lines across 5 crates, 45 tests passing (plus 1 ignored benchmark). Nothing is wired
 into Anubis yet.
 
 ## Build and test
 
 The workspace defaults to `wasm32-wasip1`; `.cargo/config.toml` sets the
-target, `+simd128`, and `wasmtime` as the test runner. `soteria` and
-`soteria-ffi` are `#![cfg(target_arch = "wasm32")]`, so a native build of them
+target, `+simd128`, and `wasmtime` as the test runner. `soteria`,
+`soteria-client` and `soteria-server` are `#![cfg(target_arch = "wasm32")]`, so a native build of them
 compiles to nothing. `soteria-isa` and `soteria-cli` build anywhere; the CLI
 aliases pass `--target host-tuple` to run natively.
 
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 39 tests across the workspace, ~1 s
+cargo test --release                       # 45 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
-cargo build --release -p soteria-ffi --target wasm32-unknown-unknown # verifier for wazero
+cargo build --release -p soteria-client -p soteria-server --target wasm32-unknown-unknown # browser and wazero modules
 cargo soteria-asm programs/hashcash.sot     # -> programs/hashcash.sotb (native)
 cargo soteria-disasm programs/hashcash.sotb # listing to stdout
 ```
@@ -38,7 +38,7 @@ crate's test binary and that summary line is missing. Search the output for
 ## Layout
 
 A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
-soteria-ffi`, plus `soteria-isa <- soteria-cli`.
+{soteria-client, soteria-server}`, plus `soteria-isa <- soteria-cli`.
 
 | Path | What it is |
 |---|---|
@@ -54,7 +54,9 @@ soteria-ffi`, plus `soteria-isa <- soteria-cli`.
 | `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
 | `crates/soteria/src/tests.rs` | VM, gadget, best-effort and assembler tests |
-| `crates/soteria-ffi/src/lib.rs` | C ABI for wazero (cdylib): request layout (module docs), `request` encoder, `soteria_*` exports, ABI tests |
+| `crates/soteria/src/wire.rs` | Request layout shared by both modules: `parse`, `request` encoder, `ERR_*`, caps, `alloc`/`take` |
+| `crates/soteria-client/src/lib.rs` | Browser module (cdylib): stepped solver, `soteria_solve`/`search`/`step`/`nonces`/`estimate` |
+| `crates/soteria-server/src/lib.rs` | Server module (cdylib) for wazero: `soteria_verify`/`verify_best` |
 | `crates/soteria-cli/` | Native `soteria-asm` / `soteria-disasm` (clap) and the `.sotb` container (magic + opcode fingerprint + program) |
 | `programs/hashcash.sot` | Annotated hashcash source; `hashcash_from_source` checks it equals `hashcash::program(16, 1000)` |
 | `README.md` | ISA reference table and feature summaries |
@@ -149,8 +151,10 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 
 1. ~~**Work metric memory term.**~~ Done: `attempt_cost`, `expected_work` (was `expected_bundles`), `budget_accounts_for_scratchpad`.
 2. ~~**Best-effort solving.**~~ Done in `best.rs`. The client feeds batch ranges into `Best` (call `search_best` repeatedly between deadline checks) and submits `Best::nonces`. `verify_best` rejects empty, duplicate or more than `MAX_BEST` (32) nonces, reruns each distinct batch once, and returns `N^ = (K-1) / u_(K)` attempts (multiply by `attempt_cost` for bundle-equivalents). N^ is exactly unbiased with relative error about `1/sqrt(K-2)` (18% at K = 32); `estimator_is_unbiased` and `best_effort_estimates_attempts` check the mean and spread. Uses the first sub-challenge only; `threshold`, `solutions` and `chained` don't apply. Open question for the policy layer: what minimum credit to require, given the 18% spread.
-3. ~~**C-ABI exports for Go/wazero.**~~ Done in `crates/soteria-ffi`. The `cdylib` (`target/wasm32-unknown-unknown/release/soteria_ffi.wasm`) is about 70 KB with no imports. Exports: `memory`, `soteria_alloc(len) -> ptr`, `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`), `soteria_fingerprint() -> i64`. Both verify calls free the buffer, so a pooled instance doesn't leak. The byte layout is in the `ffi.rs` module docs and pinned by `request_layout_is_stable`. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
-4. **Go verifier.** Embed the `.wasm`, compile once, use an anonymous instance per call (or a `sync.Pool`), plus a context timeout. Benchmark per-call versus pooled.
+3. ~~**C-ABI exports.**~~ Done as two modules, each about 68 KB with no imports (sizes are close because the VM and SHA-256 dominate). Both export `memory`, `soteria_alloc(len) -> ptr` and `soteria_fingerprint() -> i64`, and take requests in the `soteria::wire` layout (pinned by `request_layout_is_stable`).
+   - **Server** (`soteria_server.wasm`, for wazero): `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`). Both free the buffer, so a pooled instance doesn't leak.
+   - **Client** (`soteria_client.wasm`, for a browser Web Worker): one job per instance. `soteria_solve(ptr, len)` or `soteria_search(ptr, len, k)` starts a job (0 or `ERR_*`); `soteria_step(batches)` returns 1 when done, 0 to continue, `ERR_NO_JOB` (-3) or `ERR_EXHAUSTED` (-4); `soteria_nonces()`/`soteria_nonces_len()` point at the current nonces; `soteria_estimate()` is the best-effort credit. Built on `gadgets::Solver`, which `solver_steps_match_solve` checks against `Challenge::solve`. Verified end to end in V8 (Node 26): client solves and searches, server verifies, estimates agree. `ERR_EXHAUSTED` (2^30 batches) is not covered by a test. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
+4. **Go verifier.** Embed `soteria_server.wasm`, compile once, use an anonymous instance per call (or a `sync.Pool`), plus a context timeout. Benchmark per-call versus pooled.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
 6. **Program blocks from `nonce >> k`.** Derive the program from `H(seed, nonce >> k)`, with blocks aligned to batches, so compilation can't be amortized across a whole challenge.
 7. **Proposed ops, not yet added:** `mulhu` (high 32 bits of a 32×32 multiply) and `pmov` (predicate → -1/0 int). Then upgrade `SqrtTap`/`DivTap`/`ClzTap` to use `fbits` for full-entropy taps.

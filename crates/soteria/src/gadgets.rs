@@ -506,6 +506,71 @@ impl Challenge {
     }
 }
 
+/// Batches in the nonce space: `batch * LANES` must fit in a u32.
+pub const BATCHES: u32 = 1 << 30;
+
+/// Outcome of `Solver::step`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Progress {
+    Working,
+    Done,
+    /// Ran out of nonces before finding every solution.
+    Exhausted,
+}
+
+/// `Challenge::solve` in resumable steps, for callers that must yield, such
+/// as a browser worker checking a deadline. Finds the same nonces as `solve`.
+pub struct Solver {
+    challenge: [u8; 32],
+    sub: [u8; 32],
+    batch: u32,
+    nonces: Vec<u32>,
+}
+
+impl Solver {
+    pub fn new(c: &Challenge, challenge: &[u8; 32]) -> Self {
+        Solver {
+            challenge: *challenge,
+            sub: c.first_sub(challenge),
+            batch: 0,
+            nonces: Vec::new(),
+        }
+    }
+
+    /// Run up to `batches` batches. `c` must be the challenge given to `new`.
+    pub fn step(&mut self, c: &Challenge, batches: u32) -> Progress {
+        for _ in 0..batches {
+            if self.nonces.len() == c.params.solutions as usize {
+                break;
+            }
+            if self.batch == BATCHES {
+                return Progress::Exhausted;
+            }
+            let base = self.batch * LANES as u32;
+            self.batch += 1;
+            let Some(r) = c.attempt(&self.sub, base) else {
+                continue;
+            };
+            if let Some(l) = r.iter().position(|x| x.0) {
+                let i = self.nonces.len() as u32;
+                self.nonces.push(base + l as u32);
+                self.sub = c.next_sub(&self.challenge, i, &r[l].1);
+                self.batch = 0;
+            }
+        }
+        if self.nonces.len() == c.params.solutions as usize {
+            Progress::Done
+        } else {
+            Progress::Working
+        }
+    }
+
+    /// Solutions found so far, in order.
+    pub fn nonces(&self) -> &[u32] {
+        &self.nonces
+    }
+}
+
 /// Independent sub-challenge i: sha256(challenge || i || zeros).
 fn derive(challenge: &[u8; 32], i: u32) -> [u8; 32] {
     let mut b = [0u8; 64];

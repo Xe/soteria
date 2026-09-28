@@ -23,6 +23,7 @@ pub mod gadgets;
 pub mod hashcash;
 pub mod puzzle;
 pub mod sha4;
+pub mod wire;
 
 pub(crate) fn lanes(v: v128) -> [u32; LANES] {
     // SAFETY: v128 and [u32; 4] are both 16 bytes of plain data; lane 0 is the lowest address.
