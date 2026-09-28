@@ -1,0 +1,46 @@
+package soteria
+
+import (
+	"github.com/TecharoHQ/anubis"
+	"github.com/TecharoHQ/anubis/lib/localization"
+)
+
+// page mirrors the wasm method's page so the base page's CSS (#progress,
+// .bar-inner, .centered-div) applies. main.js reads #soteria_info.
+templ page(localizer *localization.SimpleLocalizer, data info, mainURL string) {
+	<div class="centered-div">
+		<img id="image" style="width:100%;max-width:256px;" src={ anubis.BasePrefix + "/.within.website/x/cmd/anubis/static/img/pensive.webp?cacheBuster=" + anubis.Version }/>
+		<img style="display:none;" src={ anubis.BasePrefix + "/.within.website/x/cmd/anubis/static/img/happy.webp?cacheBuster=" + anubis.Version }/>
+		<p id="status">{ localizer.T("loading") }</p>
+		@templ.JSONScript("soteria_info", data)
+		<script id="soteria-main" defer type="module" src={ mainURL }></script>
+		<div id="progress" role="progressbar" aria-labelledby="status">
+			<div class="bar-inner"></div>
+		</div>
+		<details>
+			if anubis.UseSimplifiedExplanation {
+				<p>
+					{ localizer.T("simplified_explanation") }
+				</p>
+			} else {
+				<p>
+					{ localizer.T("ai_companies_explanation") }
+				</p>
+				<p>
+					{ localizer.T("anubis_compromise") }
+				</p>
+				<p>
+					{ localizer.T("hack_purpose") }
+				</p>
+				<p>
+					{ localizer.T("jshelter_note") }
+				</p>
+			}
+		</details>
+		<noscript>
+			<p>
+				{ localizer.T("javascript_required") }
+			</p>
+		</noscript>
+	</div>
+}
