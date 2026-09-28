@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 2,300 lines, 30 tests passing (plus 1 ignored benchmark). Nothing is wired
+Status: working prototype, about 3,000 lines (after rustfmt), 33 tests passing (plus 1 ignored benchmark). Nothing is wired
 into Anubis yet.
 
 ## Build and test
@@ -18,7 +18,7 @@ Everything targets `wasm32-wasip1`; `.cargo/config.toml` sets the target,
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 30 tests, ~1 s
+cargo test --release                       # 33 tests, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 ```
@@ -38,6 +38,7 @@ test binary and the summary line is missing. Search the output for
 | `src/sha4.rs`     | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only)                                                                                                   |
 | `src/sched.rs`    | List scheduler: sequential steps → bundles, respecting hazards                                                                                                    |
 | `src/gadgets.rs`  | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget)                                                                                        |
+| `src/best.rs`     | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate`                                                                  |
 | `src/hashcash.rs` | Hand-written hashcash program + host search/verify                                                                                                                |
 | `src/puzzle.rs`   | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested                                                                                       |
 | `src/asm.rs`      | Two-pass assembler; accepts disassembler output plus labels and `;` comments                                                                                      |
@@ -135,10 +136,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 ## Roadmap (suggested order)
 
 1. ~~**Work metric memory term.**~~ Done: `attempt_cost`, `expected_work` (was `expected_bundles`), `budget_accounts_for_scratchpad`.
-2. **Best-effort solving.**
-   - Client: hash until a deadline, keep the K lowest 64-bit digest prefixes, and submit only the nonces.
-   - Server: rejects duplicates, caps K (≈32), dedupes batches, recomputes the digests, and credits `N̂ = (K−1) / u_(K)` where `u` is the K-th smallest digest as a fraction of 2⁶⁴.
-   - Done when a statistical test shows N̂ within the expected error of the true attempt count.
+2. ~~**Best-effort solving.**~~ Done in `best.rs`. The client feeds batch ranges into `Best` (call `search_best` repeatedly between deadline checks) and submits `Best::nonces`. `verify_best` rejects empty, duplicate or more than `MAX_BEST` (32) nonces, reruns each distinct batch once, and returns `N^ = (K-1) / u_(K)` attempts (multiply by `attempt_cost` for bundle-equivalents). N^ is exactly unbiased with relative error about `1/sqrt(K-2)` (18% at K = 32); `estimator_is_unbiased` and `best_effort_estimates_attempts` check the mean and spread. Uses the first sub-challenge only; `threshold`, `solutions` and `chained` don't apply. Open question for the policy layer: what minimum credit to require, given the 18% spread.
 3. **C-ABI exports for Go/wazero.** Build a `cdylib` for `wasm32-unknown-unknown` (+simd128) with `soteria_alloc(len) -> ptr` and `soteria_verify(ptr, len) -> i32`. Request layout: `seed u64 | params | challenge[32] | nonces[u32]`. wazero runs core modules only, not components.
 4. **Go verifier.** Embed the `.wasm`, compile once, use an anonymous instance per call (or a `sync.Pool`), plus a context timeout. Benchmark per-call versus pooled.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.

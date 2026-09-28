@@ -456,7 +456,7 @@ impl Challenge {
         }))
     }
 
-    fn first_sub(&self, challenge: &[u8; 32]) -> [u8; 32] {
+    pub(crate) fn first_sub(&self, challenge: &[u8; 32]) -> [u8; 32] {
         derive(challenge, 0)
     }
 

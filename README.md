@@ -91,6 +91,17 @@ and chaining (solutions can't be searched in parallel).
 number of bundle-equivalents: bundles plus the real cost of `fill`, `fold`
 and `sha256`, which take 1 fuel each but do far more work (`attempt_cost`).
 
+## Best-effort solving (`best.rs`)
+
+Instead of searching until a digest falls under a threshold, the client hashes
+until a deadline, keeps the K lowest 64-bit digest prefixes (`Best`) and
+submits only their nonces. The server reruns each distinct batch once and
+credits `N^ = (K - 1) / u_(K)` attempts, where `u_(K)` is the largest
+submitted prefix as a fraction of 2^64. That estimate is unbiased with a
+relative error of about `1 / sqrt(K - 2)`, 18% at the maximum K of 32.
+Submitting anything but the true K lowest only lowers the credit. Slow
+devices earn partial credit instead of nothing.
+
 ## Assembler (`asm.rs`)
 
 `asm::assemble` accepts exactly what `disasm::listing` prints, plus labels

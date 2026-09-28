@@ -695,3 +695,122 @@ fn opcode_numbering_is_a_permutation() {
         Op::Subleq.encode()
     );
 }
+
+mod best_tests {
+    use super::*;
+    use crate::best::{self, Best, MAX_BEST};
+    use crate::gadgets::{Challenge, Params};
+
+    /// Relative standard deviation of N^ = (K - 1) / u_(K) over N draws.
+    fn sigma(n: usize, k: usize) -> f64 {
+        ((n - k + 1) as f64 / (n as f64 * (k - 2) as f64)).sqrt()
+    }
+
+    /// (mean, standard deviation) of N^ / N across trials.
+    fn stats(ratios: &[f64]) -> (f64, f64) {
+        let t = ratios.len() as f64;
+        let mean = ratios.iter().sum::<f64>() / t;
+        let var = ratios.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (t - 1.0);
+        (mean, var.sqrt())
+    }
+
+    /// The estimator alone, on uniform u64s: unbiased, with the predicted spread.
+    #[test]
+    fn estimator_is_unbiased() {
+        let mut rng = puzzle::SplitMix(0x5EED);
+        let (n, trials) = (4096, 4000);
+        for k in [8, 32] {
+            let ratios: Vec<f64> = (0..trials)
+                .map(|_| {
+                    let mut best = Best::new(k);
+                    for i in 0..n {
+                        best.offer(rng.next(), i as u32);
+                    }
+                    best.estimate().unwrap() / n as f64
+                })
+                .collect();
+            let (mean, sd) = stats(&ratios);
+            let s = sigma(n, k);
+            println!("K={k}: mean {mean:.4}, sd {sd:.4}, predicted sd {s:.4}");
+            assert!(
+                (mean - 1.0).abs() < 4.0 * s / (trials as f64).sqrt(),
+                "K={k} mean {mean}"
+            );
+            assert!((0.85..1.15).contains(&(sd / s)), "K={k} sd {sd} vs {s}");
+        }
+    }
+
+    /// Through the VM: client search, server verify, credit close to the true
+    /// attempt count across many challenges.
+    #[test]
+    fn best_effort_estimates_attempts() {
+        let c = Challenge::new(
+            9,
+            Params {
+                gadgets: 8,
+                scratchpad: 256,
+                ..Default::default()
+            },
+        );
+        let (batches, k, trials) = (256u32, MAX_BEST, 48);
+        let n = batches as usize * LANES;
+        let ratios: Vec<f64> = (0..trials)
+            .map(|t| {
+                let challenge = [t as u8; 32];
+                let mut best = Best::new(k);
+                // Two calls, as a client checking its deadline would make.
+                c.search_best(&challenge, &mut best, 0..batches / 2);
+                c.search_best(&challenge, &mut best, batches / 2..batches);
+                let nonces = best.nonces();
+                let credit = c.verify_best(&challenge, &nonces).unwrap();
+                assert_eq!(Some(credit), best.estimate());
+                credit / n as f64
+            })
+            .collect();
+        let (mean, sd) = stats(&ratios);
+        println!(
+            "N={n} K={k}: mean {mean:.4}, sd {sd:.4}, predicted sd {:.4}",
+            sigma(n, k)
+        );
+        assert!(
+            (mean - 1.0).abs() < 4.0 * sigma(n, k) / (trials as f64).sqrt(),
+            "mean {mean}"
+        );
+    }
+
+    #[test]
+    fn verify_best_rejects_malformed() {
+        let c = Challenge::new(
+            9,
+            Params {
+                gadgets: 8,
+                scratchpad: 256,
+                ..Default::default()
+            },
+        );
+        let challenge = [1u8; 32];
+        let mut best = Best::new(8);
+        c.search_best(&challenge, &mut best, 0..64);
+        let nonces = best.nonces();
+        let credit = c.verify_best(&challenge, &nonces).unwrap();
+
+        assert_eq!(c.verify_best(&challenge, &[]), None);
+        let too_many: Vec<u32> = (0..MAX_BEST as u32 + 1).collect();
+        assert_eq!(c.verify_best(&challenge, &too_many), None);
+        let mut dup = nonces.clone();
+        dup[1] = dup[0];
+        assert_eq!(c.verify_best(&challenge, &dup), None);
+
+        // Swapping in a nonce that isn't among the K lowest can only lower the credit.
+        let mut worse = nonces.clone();
+        worse[0] = (0..256u32).find(|n| !nonces.contains(n)).unwrap();
+        assert!(c.verify_best(&challenge, &worse).unwrap() <= credit);
+        // Credit is bound to the challenge.
+        assert_ne!(c.verify_best(&[2u8; 32], &nonces), Some(credit));
+        // A whole batch verifies with one rerun and in any order.
+        let mut rev = nonces.clone();
+        rev.reverse();
+        assert_eq!(c.verify_best(&challenge, &rev), Some(credit));
+        assert!(best::estimate(8, u64::MAX) > 6.9 && best::estimate(8, 0).is_finite());
+    }
+}
