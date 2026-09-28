@@ -140,14 +140,20 @@ fn canon(v: v128) -> v128 {
     v128_bitselect(v, u32x4_splat(0x7FC0_0000), f32x4_eq(v, v))
 }
 
+/// A slot's pending write. Kept small because every bundle builds four:
+/// the 32-byte payloads of `Mem32` (sha256 and fold digests) and `Fill`
+/// (keys) wait in `Vm::pending` instead.
+#[derive(Clone, Copy)]
 enum Write {
     None,
     R(usize, v128),
     F(usize, v128),
     P(usize, v128),
     St(v128, v128),
-    Sha(v128, [[u8; 32]; LANES]),
-    Fill([[u8; 32]; LANES], [usize; LANES]),
+    /// 32 bytes per lane from `pending` to this address.
+    Mem32(v128),
+    /// Expand `pending` into the arena up to these lengths.
+    Fill([usize; LANES]),
 }
 
 pub struct Vm {
@@ -162,6 +168,8 @@ pub struct Vm {
     /// Every lane's bytes from here up are still zero, so `reset` only has
     /// to clear below it. Anything that writes `mem` directly must raise it.
     pub dirty: usize,
+    /// Per-slot payloads for `Write::Mem32` and `Write::Fill`.
+    pending: [[[u8; 32]; LANES]; SLOTS],
 }
 
 impl Vm {
@@ -177,6 +185,7 @@ impl Vm {
             fuel,
             halted: false,
             dirty: 0,
+            pending: [[[0; 32]; LANES]; SLOTS],
         };
         vm.reset(image, nonce_base, fuel);
         vm
@@ -248,14 +257,15 @@ impl Vm {
         sha4::sha256x4(blocks)
     }
 
-    fn store(&mut self, addr: v128, mask: v128, align: u32, bytes: impl Fn(usize) -> Vec<u8>) {
+    /// Write `data(lane)` at `addr` (aligned down to `N`) in the lanes
+    /// `mask` allows.
+    fn store<const N: usize>(&mut self, addr: v128, mask: v128, data: impl Fn(usize) -> [u8; N]) {
         let (a, m) = (lanes(addr), lanes(mask));
         for l in 0..LANES {
             if m[l] != 0 {
-                let data = bytes(l);
-                let o = (a[l] & ADDR & !(align - 1)) as usize;
-                self.mem[l * MEM_SIZE + o..][..data.len()].copy_from_slice(&data);
-                self.dirty = self.dirty.max(o + data.len());
+                let o = (a[l] & ADDR) as usize & !(N - 1);
+                self.mem[l * MEM_SIZE + o..][..N].copy_from_slice(&data(l));
+                self.dirty = self.dirty.max(o + N);
             }
         }
     }
@@ -272,16 +282,23 @@ impl Vm {
         let zero = i32x4_splat(0);
         let mut next_pc = self.pc.wrapping_add(1);
         let mut halt = false;
-        let mut writes: [(v128, Write); SLOTS] = core::array::from_fn(|_| (zero, Write::None));
+        let mut writes = [(zero, Write::None); SLOTS];
 
-        // Phase 1: every slot reads pre-bundle state.
+        // Phase 1: every slot reads pre-bundle state. Operands are closures
+        // so each arm reads only the registers it uses.
         for (i, s) in bundle.iter().enumerate() {
+            if s.op == Nop {
+                continue;
+            }
             let mask = self.guard(s.guard);
             let (d, a, b) = (s.d as usize, s.a as usize, s.b as usize);
-            let (ra, rb) = (self.r[a], self.r[b]);
-            let (fa, fb) = (self.f[a & 3], self.f[b & 3]);
-            let (pa, pb) = (self.p[a], self.p[b]);
-            let imm = i32x4_splat(s.imm);
+            let ra = || self.r[a];
+            let rb = || self.r[b];
+            let fa = || self.f[a & 3];
+            let fb = || self.f[b & 3];
+            let pa = || self.p[a];
+            let pb = || self.p[b];
+            let imm = || i32x4_splat(s.imm);
             let sh = s.imm as u32 & 31;
             let w = match s.op {
                 Nop => Write::None,
@@ -289,53 +306,56 @@ impl Vm {
                     halt = self.uniform(mask)?;
                     Write::None
                 }
-                Li => Write::R(d, imm),
-                Addi => Write::R(d, i32x4_add(ra, imm)),
-                Add => Write::R(d, i32x4_add(ra, rb)),
-                Sub => Write::R(d, i32x4_sub(ra, rb)),
-                Mul => Write::R(d, i32x4_mul(ra, rb)),
-                Xor => Write::R(d, v128_xor(ra, rb)),
-                And => Write::R(d, v128_and(ra, rb)),
-                Or => Write::R(d, v128_or(ra, rb)),
-                Shl => Write::R(d, i32x4_shl(ra, sh)),
-                Shr => Write::R(d, u32x4_shr(ra, sh)),
+                Li => Write::R(d, imm()),
+                Addi => Write::R(d, i32x4_add(ra(), imm())),
+                Add => Write::R(d, i32x4_add(ra(), rb())),
+                Sub => Write::R(d, i32x4_sub(ra(), rb())),
+                Mul => Write::R(d, i32x4_mul(ra(), rb())),
+                Xor => Write::R(d, v128_xor(ra(), rb())),
+                And => Write::R(d, v128_and(ra(), rb())),
+                Or => Write::R(d, v128_or(ra(), rb())),
+                Shl => Write::R(d, i32x4_shl(ra(), sh)),
+                Shr => Write::R(d, u32x4_shr(ra(), sh)),
                 // Shift counts are taken mod 32, so sh = 0 gives ra | ra = ra.
-                Rotr => Write::R(d, v128_or(u32x4_shr(ra, sh), i32x4_shl(ra, 32 - sh))),
-                Clz => Write::R(d, clz32x4(ra)),
-                Ld => Write::R(d, self.load32(i32x4_add(ra, imm))),
-                St => Write::St(i32x4_add(ra, imm), rb),
-                Sha256 => Write::Sha(rb, self.sha(ra)),
-                CmpEq => Write::P(d, i32x4_eq(ra, rb)),
-                CmpLt => Write::P(d, i32x4_lt(ra, rb)),
-                CmpLtu => Write::P(d, u32x4_lt(ra, rb)),
-                PAnd => Write::P(d, v128_and(pa, pb)),
-                POr => Write::P(d, v128_or(pa, pb)),
-                PXor => Write::P(d, v128_xor(pa, pb)),
-                PNot => Write::P(d, v128_not(pa)),
-                FCvt => Write::F(d & 3, f32x4_convert_i32x4(ra)),
-                FAdd => Write::F(d & 3, canon(f32x4_add(fa, fb))),
-                FSub => Write::F(d & 3, canon(f32x4_sub(fa, fb))),
-                FMul => Write::F(d & 3, canon(f32x4_mul(fa, fb))),
-                FDiv => Write::F(d & 3, canon(f32x4_div(fa, fb))),
-                FSqrt => Write::F(d & 3, canon(f32x4_sqrt(fa))),
-                FLt => Write::P(d, f32x4_lt(fa, fb)),
-                FTrunc => Write::R(d, i32x4_trunc_sat_f32x4(fa)),
+                Rotr => Write::R(d, v128_or(u32x4_shr(ra(), sh), i32x4_shl(ra(), 32 - sh))),
+                Clz => Write::R(d, clz32x4(ra())),
+                Ld => Write::R(d, self.load32(i32x4_add(ra(), imm()))),
+                St => Write::St(i32x4_add(ra(), imm()), rb()),
+                Sha256 => {
+                    self.pending[i] = self.sha(ra());
+                    Write::Mem32(rb())
+                }
+                CmpEq => Write::P(d, i32x4_eq(ra(), rb())),
+                CmpLt => Write::P(d, i32x4_lt(ra(), rb())),
+                CmpLtu => Write::P(d, u32x4_lt(ra(), rb())),
+                PAnd => Write::P(d, v128_and(pa(), pb())),
+                POr => Write::P(d, v128_or(pa(), pb())),
+                PXor => Write::P(d, v128_xor(pa(), pb())),
+                PNot => Write::P(d, v128_not(pa())),
+                FCvt => Write::F(d & 3, f32x4_convert_i32x4(ra())),
+                FAdd => Write::F(d & 3, canon(f32x4_add(fa(), fb()))),
+                FSub => Write::F(d & 3, canon(f32x4_sub(fa(), fb()))),
+                FMul => Write::F(d & 3, canon(f32x4_mul(fa(), fb()))),
+                FDiv => Write::F(d & 3, canon(f32x4_div(fa(), fb()))),
+                FSqrt => Write::F(d & 3, canon(f32x4_sqrt(fa()))),
+                FLt => Write::P(d, f32x4_lt(fa(), fb())),
+                FTrunc => Write::R(d, i32x4_trunc_sat_f32x4(fa())),
                 Subleq => {
-                    let nb = i32x4_sub(rb, ra);
+                    let nb = i32x4_sub(rb(), ra());
                     if self.uniform(v128_and(mask, i32x4_le(nb, zero)))? {
                         next_pc = s.imm as u32;
                     }
                     Write::R(b, nb)
                 }
                 Bp => {
-                    if self.uniform(v128_and(mask, pa))? {
+                    if self.uniform(v128_and(mask, pa()))? {
                         next_pc = s.imm as u32;
                     }
                     Write::None
                 }
                 PAny => Write::P(
                     d,
-                    if v128_any_true(pa) {
+                    if v128_any_true(pa()) {
                         u32x4_splat(!0)
                     } else {
                         zero
@@ -344,39 +364,42 @@ impl Vm {
                 Bswap => Write::R(
                     d,
                     i8x16_swizzle(
-                        ra,
+                        ra(),
                         i8x16(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12),
                     ),
                 ),
-                Popcnt => Write::R(d, popcnt32x4(ra)),
-                FBits => Write::R(d, fa),
-                FFrom => Write::F(d & 3, ra),
+                Popcnt => Write::R(d, popcnt32x4(ra())),
+                FBits => Write::R(d, fa()),
+                FFrom => Write::F(d & 3, ra()),
                 Mulhu => Write::R(
                     d,
                     i32x4_shuffle::<1, 3, 5, 7>(
-                        u64x2_extmul_low_u32x4(ra, rb),
-                        u64x2_extmul_high_u32x4(ra, rb),
+                        u64x2_extmul_low_u32x4(ra(), rb()),
+                        u64x2_extmul_high_u32x4(ra(), rb()),
                     ),
                 ),
                 // Predicates are always all-ones or all-zero per lane.
-                PMov => Write::R(d, pa),
-                Fold => Write::Sha(rb, self.fold(ra)),
+                PMov => Write::R(d, pa()),
+                Fold => {
+                    self.pending[i] = self.fold(ra());
+                    Write::Mem32(rb())
+                }
                 Fill => {
-                    let (m, k) = (lanes(ra), lanes(rb));
-                    Write::Fill(
-                        core::array::from_fn(|l| {
-                            let o = l * MEM_SIZE + (k[l] & ADDR & !31) as usize;
-                            self.mem[o..o + 32].try_into().unwrap()
-                        }),
-                        core::array::from_fn(|l| (((m[l] & ADDR) + 1) & !31) as usize),
-                    )
+                    let (m, k) = (lanes(ra()), lanes(rb()));
+                    self.pending[i] = core::array::from_fn(|l| {
+                        let o = l * MEM_SIZE + (k[l] & ADDR & !31) as usize;
+                        self.mem[o..o + 32].try_into().unwrap()
+                    });
+                    Write::Fill(core::array::from_fn(|l| {
+                        (((m[l] & ADDR) + 1) & !31) as usize
+                    }))
                 }
             };
             writes[i] = (mask, w);
         }
 
         // Phase 2: commit in slot order, only in lanes the guard allows.
-        for (mask, w) in writes {
+        for (i, (mask, w)) in writes.into_iter().enumerate() {
             match w {
                 Write::None => {}
                 Write::R(d, v) => self.r[d] = v128_bitselect(v, self.r[d], mask),
@@ -385,10 +408,14 @@ impl Vm {
                 Write::P(d, v) => self.p[d] = v128_bitselect(v, self.p[d], mask),
                 Write::St(addr, v) => {
                     let v = lanes(v);
-                    self.store(addr, mask, 4, |l| v[l].to_le_bytes().to_vec());
+                    self.store(addr, mask, |l| v[l].to_le_bytes());
                 }
-                Write::Sha(addr, digests) => self.store(addr, mask, 32, |l| digests[l].to_vec()),
-                Write::Fill(keys, lens) => {
+                Write::Mem32(addr) => {
+                    let digests = self.pending[i];
+                    self.store(addr, mask, |l| digests[l]);
+                }
+                Write::Fill(lens) => {
+                    let keys = self.pending[i];
                     let m = lanes(mask);
                     for l in 0..LANES {
                         if m[l] != 0 && lens[l] > ARENA_START {
