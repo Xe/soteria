@@ -20,7 +20,7 @@ import (
 )
 
 // difficulty is small so solving in tests is effectively instant.
-const difficulty = 2
+const difficulty = 8
 
 func setup(t testing.TB) *Impl {
 	t.Helper()
@@ -93,9 +93,10 @@ func TestThreshold(t *testing.T) {
 		err        error
 	}{
 		{name: "zero is free", difficulty: 0, want: 0xFFFFFFFF},
-		{name: "one", difficulty: 1, want: 1 << 30},
-		{name: "default", difficulty: 4, want: 1 << 18},
-		{name: "max", difficulty: MaxDifficulty, want: 1 << 2},
+		{name: "one attempt per solution is free", difficulty: solutionBits, want: 0xFFFFFFFF},
+		{name: "one bit per solution", difficulty: solutionBits + 1, want: 1 << 31},
+		{name: "old sha256-style 4", difficulty: 16, want: 1 << 18},
+		{name: "max", difficulty: MaxDifficulty, want: 1 << 1},
 		{name: "negative", difficulty: -1, err: ErrDifficulty},
 		{name: "too high", difficulty: MaxDifficulty + 1, err: ErrDifficulty},
 	} {
@@ -410,8 +411,8 @@ func BenchmarkVerify(b *testing.B) {
 	i := setup(b)
 
 	randomData := sha256.Sum256([]byte(b.Name()))
-	p, _ := NewParams(randomData[:], 4)
-	req := p.Request(solve(b, randomData[:], 4))
+	p, _ := NewParams(randomData[:], 16)
+	req := p.Request(solve(b, randomData[:], 16))
 
 	for b.Loop() {
 		ok, err := i.server.Verify(b.Context(), req)

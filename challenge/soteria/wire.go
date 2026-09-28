@@ -34,8 +34,9 @@ const (
 	solutionBits = 2 // log2(solutions)
 )
 
-// MaxDifficulty is the highest difficulty that fits a 32-bit threshold.
-const MaxDifficulty = (31 + solutionBits) / 4
+// MaxDifficulty is the highest difficulty whose per-solution threshold keeps
+// at least one bit, so a solution is expected well inside the nonce space.
+const MaxDifficulty = 31 + solutionBits
 
 var (
 	ErrDifficulty = errors.New("soteria: difficulty out of range")
@@ -60,14 +61,15 @@ type Params struct {
 }
 
 // threshold maps an Anubis difficulty to a per-solution threshold so that
-// the expected attempts over all solutions is 16^difficulty, the same as the
-// sha256 method at the same difficulty. One attempt is far more work than one
-// SHA-256, so equal difficulty is not equal time.
+// the expected attempts over all solutions is 2^difficulty. Difficulty is in
+// bits, not the sha256 method's hex digits (16^difficulty): one attempt is
+// far more work than one SHA-256, so a factor of 16 per step is too coarse.
+// Difficulty 4n asks for as many attempts as sha256 difficulty n.
 func threshold(difficulty int) (uint32, error) {
 	if difficulty < 0 || difficulty > MaxDifficulty {
 		return 0, fmt.Errorf("%w: %d not in 0..%d", ErrDifficulty, difficulty, MaxDifficulty)
 	}
-	bits := 4*difficulty - solutionBits
+	bits := difficulty - solutionBits
 	if bits <= 0 {
 		return ^uint32(0), nil
 	}
