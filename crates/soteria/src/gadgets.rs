@@ -263,9 +263,9 @@ impl Default for Params {
 /// One mix round (32 bytes in each of the 4 lanes, as `fill` and `fold` do)
 /// in bundles. Measured by `calibrate_memory_cost` on the interpreter; it
 /// will shift when the interpreter gets faster or challenges get compiled.
-pub const ROUND_COST: f64 = 0.25;
+pub const ROUND_COST: f64 = 0.26;
 /// One `sha256` (two 4-lane compressions) in bundles, measured the same way.
-pub const SHA_COST: f64 = 13.0;
+pub const SHA_COST: f64 = 16.0;
 
 const STATE: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Dependent loads in one `MemWalk`.

@@ -142,15 +142,19 @@ per sub-challenge, can't reuse compiled blocks either.
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad (up to 1 MiB), threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on, block 0 (one program). The default challenge is
-about 102 bundles and packs about 2.4 slots per bundle, but costs about 533
+about 102 bundles and packs about 2.4 slots per bundle, but costs about 556
 bundle-equivalents per attempt once `fill`, `fold` and `sha256` are charged
-for their real work and loops for their expected iterations (it was 361
-before the 16 gadgets of roadmap item 7, 439 before `MemWalk`, 455 before
-`VarRot`, 458 before `CondRepeat`, 521 before `SMulHiTap`, 524 before `RsqrtTap`, 529 before tiered masks, 524 before `MemBlock` and 543 before float state; `FoldTap` alone is about 129).
-`packing_stats` prints these. `Challenge::attempt_cost` is, per bundle,
-1 + `ROUND_COST` per 32-byte mix round (`fill`, `fold`) + `SHA_COST` per
-`sha256`, times `expected_repeats()` (about 6.86) inside a loop.
-`expected_work` and `with_budget` use it.
+for their real work and loops for their expected iterations. `packing_stats`
+prints these. Under the old weights it was 361 before the 16 gadgets of
+roadmap item 7, 439 before `MemWalk`, 458 before `CondRepeat` and 533 after
+float state; the reweighting in item 9 alone took 533 to 556.
+`Challenge::attempt_cost` is, per bundle, 1 + `ROUND_COST` per 32-byte mix
+round (`fill`, `fold`) + `SHA_COST` per `sha256`, times `expected_repeats()`
+(about 6.86) inside a loop. `expected_work` and `with_budget` use it. The
+two weights (0.26 and 16.0, from 0.25 and 13.0 before item 9) were measured
+by the ignored `calibrate_memory_cost` test; rerun it and update the
+constants after interpreter changes or roadmap item 5, since a faster
+interpreter makes memory relatively more expensive.
 
 `CondRepeat` is the only control flow in gadget programs. Each lane's count is
 `c = 1 + 3 bits of z` (1..=`REPEAT_MAX` = 8), kept in r13, which leaves the
@@ -166,10 +170,7 @@ maximum. Guarding the body per lane would let a scalar or GPU solver skip about
 straight-line segments on either side of the loop separately, since the
 scheduler can't move code across a branch. Fuel is no longer the bundle count:
 `gadgets::fuel` counts every loop at `REPEAT_MAX` iterations, and
-`Challenge::fuel` is that for the seed program. The two weights (0.25 and 13.0) were measured on the current
-interpreter by the ignored `calibrate_memory_cost` test; rerun it and update
-the constants after roadmap items 5 or 9, since a faster interpreter makes
-memory relatively more expensive.
+`Challenge::fuel` is that for the seed program.
 
 Registers: r0 = 0, r1..r8 state, r9..r13 temps (round-robin; r13 is the
 `CondRepeat` counter inside a loop), r14 scratchpad mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 40..48 float state,
@@ -203,7 +204,7 @@ chain is short; raise `mix.float` to lengthen it.
    - **Client** (`soteria_client.wasm`, for a browser Web Worker): one job per instance. `soteria_solve(ptr, len)` or `soteria_search(ptr, len, k)` starts a job (0 or `ERR_*`); `soteria_step(batches)` returns 1 when done, 0 to continue, `ERR_NO_JOB` (-3) or `ERR_EXHAUSTED` (-4); `soteria_nonces()`/`soteria_nonces_len()` point at the current nonces; `soteria_estimate()` is the best-effort credit. Built on `gadgets::Solver`, which `solver_steps_match_solve` checks against `Challenge::solve`. Verified end to end in V8 (Node 26): client solves and searches, server verifies, estimates agree. `ERR_EXHAUSTED` (2^30 batches) is not covered by a test. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
 4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 1.4 ms per verify at difficulty 16 (M-series; 1.1 ms before item 8). No `sync.Pool` yet. Anubis `difficulty` d is in bits, not the sha256 method's hex digits: 2^d expected attempts (4 chained solutions, `threshold = 2^(34-d)`, 256-nonce program blocks), max 33. Difficulty 4n asks for as many attempts as sha256 difficulty n, so an Anubis policy written for sha256 needs its difficulty multiplied by 4. On an M-series Mac under wasmtime, `bench_solve` puts difficulty 12 (4096 attempts) at about 127k nonces/s (116k before item 9, 129k before `CondRepeat`), about 32 to 37 ms mean depending on the run; each extra bit doubles it. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
-6. ~~**Program blocks from `nonce >> k`.**~~ Done: `Params::block`, `block_seed(seed, sub, nonce >> k)`, `Challenge::program_for`, tested by `blocks_get_their_own_programs` plus block variants of `scheduler_matches_sequential`, `solver_steps_match_solve` and `solve_verify_chained_and_not`. A default program builds in about 16 us, 0.62 batch attempts (`calibrate_memory_cost` prints it). The Anubis method uses k = 8 (about 1% client overhead); verify went from about 0.9 to 1.1 ms since the server builds one program per solution. Item 5's compiled `search(base, batches)` export should work per block.
+6. ~~**Program blocks from `nonce >> k`.**~~ Done: `Params::block`, `block_seed(seed, sub, nonce >> k)`, `Challenge::program_for`, tested by `blocks_get_their_own_programs` plus block variants of `scheduler_matches_sequential`, `solver_steps_match_solve` and `solve_verify_chained_and_not`. A default program builds in about 27 us, 0.77 batch attempts (`calibrate_memory_cost` prints it; it was 16 us and 0.62 before the gadgets added after item 8). The Anubis method uses k = 8 (about 1.2% client overhead); verify went from about 0.9 to 1.1 ms since the server builds one program per solution. Item 5's compiled `search(base, batches)` export should work per block.
 7. ~~**`mulhu`, `pmov`, full-entropy taps.**~~ Done: `mulhu` (high half of an unsigned 32×32 multiply) and `pmov` (predicate → -1/0), tested by `mulhu_and_pmov_match_scalar`. `SqrtTap` (on `y >> 1`, so never NaN) and `DivTap` xor in `fbits` of the result. `ClzTap` uses `mulhu(clz + imm, y)` instead, since `fbits` of a 0..32 count is still 33 values. Also added 16 gadgets, all in the existing six `Mix` groups so the wire layout is unchanged: `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap` (alu); `MulHiTap`, `CmpMaskTap` (taps); `FMulTap`, `FAddTap` (raw bits via `ffrom`), `HypotTap` (float); `MemChase`, `MemRmw`, `MemXorLoad` (memory); `CondNegate`, `CondWordRotate` (lanes); `ShaFeistel` (SHA of every word but x, xored into x: a bijective SHA gadget), `FoldTap` (a mid-program `fold`) (sha). `scheduler_matches_sequential` now asserts every gadget ran. Adding gadgets changed which program each seed builds.
 8. ~~**Latency-bound pointer-chase gadget and a larger arena.**~~ Done: `MEM_SIZE` is 1 MiB per lane with 20-bit address masks, `Params::scratchpad` (and the wire field) goes up to 1 MiB, and `MemWalk` (memory group) walks `WALK_HOPS` = 8 dependent loads, `t = ld((t + z) & mask)`, adding each loaded word into x. Tested by `memory_addresses_are_twenty_bits`, `reset_matches_new`, `mem_walk_is_a_dependent_chain` and `megabyte_scratchpad_solves_and_verifies`. Reusing the `Vm` (see the spec) made default solves about 25% faster, since `Vm::new` used to zero 256 KiB per attempt. The Go host's memory cap went from 64 to 128 pages. Defaults are unchanged (16 KiB scratchpad in `Params` and the Anubis method); `bench_scratchpad` on an M-series Mac:
 
@@ -215,7 +216,7 @@ chain is short; raise `mix.float` to lengthen it.
    | 1 MiB | 24730 | 3.5k | 288 |
 
    Past 64 KiB, `fill` and `fold` (sequential, bandwidth-bound) are most of the cost, not the `MemWalk` hops. Anubis difficulty counts attempts, so a bigger default arena means lowering difficulty by about log2 of the cost ratio (3.5 bits for 256 KiB) to keep solve times. Whether that narrows the phone/desktop gap needs measuring on phones.
-9. ~~**Interpreter performance.**~~ Done: pending writes are small and `Copy` (`Write::Mem32`, formerly `Write::Sha`, and `Write::Fill` keep their 32-byte payloads in `Vm::pending`), stores write directly instead of through a `Vec`, operands are read only by the arms that use them, and NOP slots are skipped. `calibrate_memory_cost` went from about 88 to 62 ns per bundle, and 16 KiB solves from 113k to 127k nonces/s. Pre-decoding was skipped: `Program` already holds decoded `Slot`s, so it would save only an immediate splat and a guard branch per slot. `interpreter_matches_reference` protects it: 300 random programs over every opcode (random guards, immediates, NaN floats, branches) and 8 challenge programs run through both `Vm::step` and `reference::step`, comparing registers, pc, fuel, halt, dirty and errors after every bundle and memory at the end.
+9. ~~**Interpreter performance.**~~ Done: pending writes are small and `Copy` (`Write::Mem32`, formerly `Write::Sha`, and `Write::Fill` keep their 32-byte payloads in `Vm::pending`), stores write directly instead of through a `Vec`, operands are read only by the arms that use them, and NOP slots are skipped. `calibrate_memory_cost` went from about 88 to 62 ns per bundle, and 16 KiB solves from 113k to 127k nonces/s. Pre-decoding was skipped: `Program` already holds decoded `Slot`s, so it would save only an immediate splat and a guard branch per slot. `interpreter_matches_reference` runs 300 random programs over every opcode (random guards, immediates, NaN floats, branches) and 8 challenge programs through both `Vm::step` and `reference::step`, comparing registers, pc, fuel, halt, dirty and errors after every bundle and memory at the end. `ROUND_COST` and `SHA_COST` were recalibrated.
 10. **Later:** a lane visualizer for the Anubis challenge page, the WIT `compiler`/`verifier` interfaces (`jco transpile` for browsers), and the Techaro datasheet.
 
 ## Decisions already made (don't relitigate without a reason)
