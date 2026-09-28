@@ -6,7 +6,10 @@ import (
 )
 
 // page mirrors the wasm method's page so the base page's CSS (#progress,
-// .bar-inner, .centered-div) applies. main.js reads #soteria_info.
+// .bar-inner, .centered-div) applies. main.js reads #soteria_info and draws
+// the lane visualizer into #lanes, folded into the details expando above the
+// simplified explanation. Screen readers skip #lanes; the progress bar
+// already describes the work.
 templ page(localizer *localization.SimpleLocalizer, data info, mainURL string) {
 	<div class="centered-div">
 		<img id="image" style="width:100%;max-width:256px;" src={ anubis.BasePrefix + "/.within.website/x/cmd/anubis/static/img/pensive.webp?cacheBuster=" + anubis.Version }/>
@@ -17,25 +20,38 @@ templ page(localizer *localization.SimpleLocalizer, data info, mainURL string) {
 		<div id="progress" role="progressbar" aria-labelledby="status">
 			<div class="bar-inner"></div>
 		</div>
-		<details>
-			if anubis.UseSimplifiedExplanation {
-				<p>
-					{ localizer.T("simplified_explanation") }
-				</p>
-			} else {
-				<p>
-					{ localizer.T("ai_companies_explanation") }
-				</p>
-				<p>
-					{ localizer.T("anubis_compromise") }
-				</p>
-				<p>
-					{ localizer.T("hack_purpose") }
-				</p>
-				<p>
-					{ localizer.T("jshelter_note") }
-				</p>
+		<style>
+			/* Xe design system tokens, with fallbacks for older xess builds.
+			   The pre is always the dark Gruvbox surface, so accents use the
+			   dark palette. */
+			#lanes {
+				display: none;
+				max-width: 100%;
+				overflow-x: auto;
+				margin: var(--space-4, 16px) auto;
+				padding: var(--space-3, 12px) var(--space-4, 16px);
+				text-align: left;
+				font-family: var(--font-mono, var(--body-preformatted-font, monospace));
+				font-size: var(--step--1, 0.875rem);
+				line-height: 1.5;
+				background: #1d2021;
+				color: #ebdbb2;
+				border: 1px solid var(--border, #665c54);
+				border-radius: var(--radius-md, 6px);
+				box-shadow: var(--shadow-sm, 0 1px 2px rgba(40, 40, 40, 0.08)), var(--shadow-md, 0 2px 6px rgba(40, 40, 40, 0.12));
 			}
+			#lanes .dim { color: #a89984; }
+			#lanes .hit { color: #d3869b; }
+			#lanes .best { color: #fabd2f; }
+			#lanes .solved { color: #b8bb26; }
+		</style>
+		<details>
+			<pre id="lanes" aria-hidden="true"></pre>
+			<p>
+				// The string links to Wikipedia with an <a>, and comes from
+				// Anubis' own locale files, so render it as HTML.
+				@templ.Raw(localizer.T("simplified_explanation"))
+			</p>
 		</details>
 		<noscript>
 			<p>

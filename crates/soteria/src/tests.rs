@@ -991,6 +991,48 @@ mod gadget_tests {
         }
     }
 
+    /// `Solver::lanes` reports each batch's digest heads and the lowest head
+    /// per lane since the last solution, kept after the final one.
+    #[test]
+    fn solver_lanes_track_attempts() {
+        use crate::gadgets::{Lane, Solver};
+        let p = Params {
+            threshold: 1 << 27,
+            solutions: 2,
+            ..Default::default()
+        };
+        let (c, challenge) = (Challenge::new(8, p), [3u8; 32]);
+        let mut s = Solver::new(&c, &challenge);
+        assert_eq!(s.lanes(), &[Lane::EMPTY; LANES]);
+        let mut sub = c.first_sub(&challenge);
+        let mut best = [(0, u32::MAX); LANES];
+        let mut base = 0;
+        while s.nonces().len() < 2 {
+            let found = s.nonces().len();
+            s.step(&c, 1);
+            let r = c.attempt(&sub, base).unwrap();
+            for (l, lane) in s.lanes().iter().enumerate() {
+                let head = u32::from_be_bytes(r[l].1[..4].try_into().unwrap());
+                assert_eq!((lane.nonce, lane.head), (base + l as u32, head));
+                assert_eq!(head < p.threshold, r[l].0, "head is what's compared");
+                if head < best[l].1 {
+                    best[l] = (lane.nonce, head);
+                }
+            }
+            base += LANES as u32;
+            if s.nonces().len() > found {
+                let l = r.iter().position(|x| x.0).unwrap();
+                sub = c.next_sub(&challenge, found as u32, &r[l].1);
+                if s.nonces().len() < 2 {
+                    best = [(0, u32::MAX); LANES];
+                }
+                base = 0;
+            }
+            let got: Vec<_> = s.lanes().iter().map(|l| (l.best_nonce, l.best_head)).collect();
+            assert_eq!(got, best);
+        }
+    }
+
     #[test]
     fn fuel_is_exact_and_budget_hits_target() {
         let c = Challenge::with_budget(

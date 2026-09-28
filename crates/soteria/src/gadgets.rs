@@ -1045,7 +1045,7 @@ impl Challenge {
         derive(challenge, 0)
     }
 
-    fn next_sub(&self, challenge: &[u8; 32], i: u32, digest: &[u8; 32]) -> [u8; 32] {
+    pub(crate) fn next_sub(&self, challenge: &[u8; 32], i: u32, digest: &[u8; 32]) -> [u8; 32] {
         if self.params.chained {
             *digest
         } else {
@@ -1183,6 +1183,30 @@ pub enum Progress {
     Exhausted,
 }
 
+/// What one lane of a `Solver` has seen, for progress displays. A digest's
+/// head is `be32(digest[0..4])`, the word compared against the threshold.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lane {
+    /// Nonce and head of the lane's latest attempt.
+    pub nonce: u32,
+    pub head: u32,
+    /// Lowest head for the current sub-challenge (the last one, once
+    /// solved), and its nonce.
+    pub best_nonce: u32,
+    pub best_head: u32,
+}
+
+impl Lane {
+    /// No attempts yet: every head reads as `u32::MAX`.
+    pub const EMPTY: Lane = Lane {
+        nonce: 0,
+        head: u32::MAX,
+        best_nonce: 0,
+        best_head: u32::MAX,
+    };
+}
+
 /// `Challenge::solve` in resumable steps, for callers that must yield, such
 /// as a browser worker checking a deadline. Finds the same nonces as `solve`.
 pub struct Solver {
@@ -1190,6 +1214,7 @@ pub struct Solver {
     sub: [u8; 32],
     batch: u32,
     nonces: Vec<u32>,
+    lanes: [Lane; LANES],
 }
 
 impl Solver {
@@ -1199,6 +1224,7 @@ impl Solver {
             sub: c.first_sub(challenge),
             batch: 0,
             nonces: Vec::new(),
+            lanes: [Lane::EMPTY; LANES],
         }
     }
 
@@ -1216,11 +1242,25 @@ impl Solver {
             let Some(r) = c.attempt(&self.sub, base) else {
                 continue;
             };
+            for (l, lane) in self.lanes.iter_mut().enumerate() {
+                lane.nonce = base + l as u32;
+                lane.head = u32::from_be_bytes(r[l].1[..4].try_into().unwrap());
+                if lane.head < lane.best_head {
+                    (lane.best_nonce, lane.best_head) = (lane.nonce, lane.head);
+                }
+            }
             if let Some(l) = r.iter().position(|x| x.0) {
                 let i = self.nonces.len() as u32;
                 self.nonces.push(base + l as u32);
                 self.sub = c.next_sub(&self.challenge, i, &r[l].1);
                 self.batch = 0;
+                // Keep the last sub-challenge's bests once done, so a final
+                // display still shows them.
+                if self.nonces.len() < c.params.solutions as usize {
+                    for lane in &mut self.lanes {
+                        (lane.best_nonce, lane.best_head) = (0, u32::MAX);
+                    }
+                }
             }
         }
         if self.nonces.len() == c.params.solutions as usize {
@@ -1233,6 +1273,11 @@ impl Solver {
     /// Solutions found so far, in order.
     pub fn nonces(&self) -> &[u32] {
         &self.nonces
+    }
+
+    /// Per-lane progress. A batch that traps leaves it unchanged.
+    pub fn lanes(&self) -> &[Lane; LANES] {
+        &self.lanes
     }
 }
 

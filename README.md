@@ -160,6 +160,12 @@ const nonces = new Uint32Array(client.memory.buffer,
   client.soteria_nonces(), client.soteria_nonces_len());
 ```
 
+In threshold mode, `soteria_lanes()` points at 16 u32s for progress displays:
+per lane, the latest nonce and digest head (`be32(digest[0..4])`, solved when
+below the threshold), then the nonce and head of the lane's lowest digest
+since the previous solution (kept once the job is done). The Anubis page
+draws these as its lane visualizer.
+
 ## Tools (`soteria-cli`)
 
 `soteria-asm` assembles a `.sot` listing into a `.sotb` file, and

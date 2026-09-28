@@ -1,6 +1,8 @@
 // Soteria solver worker. The page posts {module, request}: a compiled
 // soteria_client.wasm and the soteria::wire request header. The worker posts
-// {attempts} while it runs, then {nonces, fingerprint} or {error}.
+// {attempts, found, lanes} while it runs, then {nonces, fingerprint,
+// attempts, found, lanes} or {error}. lanes is soteria_lanes: per lane, nonce, head, best nonce, best
+// head.
 
 // Batches (4 nonces each) per soteria_step call. Small enough that progress
 // messages stay frequent on slow phones.
@@ -17,6 +19,12 @@ const errors = {
 };
 
 const describe = (code) => errors[String(code)] || `error ${code}`;
+
+// Copies soteria_lanes out of the module's memory for posting.
+const lanes = (e) => ({
+  found: e.soteria_nonces_len(),
+  lanes: Array.from(new Uint32Array(e.memory.buffer, e.soteria_lanes(), 16)),
+});
 
 self.onmessage = async (event) => {
   try {
@@ -46,7 +54,7 @@ self.onmessage = async (event) => {
       const now = Date.now();
       if (now - lastPost >= PROGRESS_INTERVAL) {
         lastPost = now;
-        postMessage({ attempts });
+        postMessage({ attempts, ...lanes(e) });
       }
     }
 
@@ -59,7 +67,7 @@ self.onmessage = async (event) => {
       .toString(16)
       .padStart(16, "0");
 
-    postMessage({ nonces, fingerprint, attempts });
+    postMessage({ nonces, fingerprint, attempts, ...lanes(e) });
   } catch (err) {
     postMessage({ error: String(err) });
   }

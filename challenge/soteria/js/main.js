@@ -16,6 +16,7 @@ const status = document.getElementById("status");
 const image = document.getElementById("image");
 const title = document.getElementById("title");
 const progress = document.getElementById("progress");
+const lanesView = document.getElementById("lanes");
 
 const imageURL = (mood) =>
   `${basePrefix}/.within.website/x/cmd/anubis/static/img/${mood}.webp`;
@@ -62,6 +63,48 @@ const hexToBytes = (hex) => {
   return out;
 };
 
+const hex = (n) => n.toString(16).padStart(8, "0");
+
+// Widest zero-bit bar, so difficulty 33 still fits a phone screen.
+const BAR = 16;
+
+const span = (cls, text) => {
+  const el = document.createElement("span");
+  el.className = cls;
+  el.textContent = text;
+  return el;
+};
+
+// Draws soteria_lanes: each lane's latest nonce and digest head, how many of
+// the leading zero bits a solution needs that head has, and the lane's lowest
+// head since the last solution. A head below the threshold solves. Classes
+// (dim, hit, best, solved) are styled in page.templ.
+const drawLanes = ({ attempts, found, lanes }) => {
+  const need = Math.clz32(info.threshold - 1);
+  const cells = Math.min(need, BAR);
+  const header = "lane nonce    digest   zero bits";
+  // Column where "best" starts: past both the bar and its header.
+  const width = Math.max(header.length, 25 + cells) + 2;
+  const nodes = [span("dim", header.padEnd(width) + "best\n")];
+  for (let l = 0; l < 4; l++) {
+    const [nonce, head, , bestHead] = lanes.slice(l * 4, l * 4 + 4);
+    const filled = need === 0 ? cells : Math.round((Math.min(Math.clz32(head), need) * cells) / need);
+    const solved = head < info.threshold;
+    nodes.push(
+      `${l}    ${hex(nonce)} `,
+      solved ? span("solved", hex(head) + "*") : hex(head) + " ",
+      "[",
+      span("hit", "#".repeat(filled)),
+      ".".repeat(cells - filled) + "]" + " ".repeat(width - 25 - cells),
+      bestHead === 0xffffffff ? "-" : span("best", hex(bestHead)),
+      "\n",
+    );
+  }
+  nodes.push(span("dim", `solutions ${found}/${info.solutions}, ${attempts} nonces tried`));
+  lanesView.replaceChildren(...nodes);
+  lanesView.style.display = "inline-block";
+};
+
 const solve = (module, request, onProgress) =>
   new Promise((resolve, reject) => {
     const worker = new Worker(info.workerURL);
@@ -73,7 +116,7 @@ const solve = (module, request, onProgress) =>
         worker.terminate();
         resolve(data);
       } else {
-        onProgress(data.attempts);
+        onProgress(data);
       }
     };
     worker.onerror = (event) => {
@@ -108,7 +151,9 @@ const solve = (module, request, onProgress) =>
     const module = await compile(info.wasmURL);
     const t0 = Date.now();
 
-    const result = await solve(module, hexToBytes(info.request), (attempts) => {
+    const result = await solve(module, hexToBytes(info.request), (data) => {
+      drawLanes(data);
+      const { attempts } = data;
       // Same ease-out as main.ts: fast at first, slower as it gets unlikely.
       const remaining = Math.exp(-attempts / expected);
       const distance = (1 - remaining * remaining) * 100;
@@ -121,6 +166,8 @@ const solve = (module, request, onProgress) =>
     });
 
     const t1 = Date.now();
+    // The final frame stays up while the browser navigates away.
+    drawLanes(result);
     const u = new URL(info.passURL, window.location.href);
     u.searchParams.set("id", challenge.id);
     u.searchParams.set("nonces", result.nonces.join(","));

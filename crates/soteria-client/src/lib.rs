@@ -14,12 +14,14 @@
 //! - `soteria_search(ptr, len, k)`: best-effort mode, keep the K lowest digests.
 //!
 //! Requests use the layout in `soteria::wire`, with no nonces; both start
-//! calls free the request buffer.
+//! calls free the request buffer. `soteria_lanes` exposes per-lane digest
+//! heads for the challenge page's lane visualizer.
 
 #![cfg(target_arch = "wasm32")]
 
 use soteria::best::{Best, MAX_BEST};
-use soteria::gadgets::{Challenge, Progress, Solver, BATCHES};
+use soteria::gadgets::{Challenge, Lane, Progress, Solver, BATCHES};
+use soteria::LANES;
 use soteria::wire::{self, parse, Request};
 use std::cell::RefCell;
 
@@ -38,10 +40,16 @@ struct State {
     job: Option<Job>,
     /// What `soteria_nonces` points at, refreshed after every step.
     nonces: Vec<u32>,
+    /// What `soteria_lanes` points at, refreshed after every step.
+    lanes: [Lane; LANES],
 }
 
 thread_local! {
-    static STATE: RefCell<State> = const { RefCell::new(State { job: None, nonces: Vec::new() }) };
+    static STATE: RefCell<State> = const { RefCell::new(State {
+        job: None,
+        nonces: Vec::new(),
+        lanes: [Lane::EMPTY; LANES],
+    }) };
 }
 
 /// Parse a solver request: no nonces allowed.
@@ -57,6 +65,7 @@ fn set(job: Option<Job>) {
     STATE.with_borrow_mut(|s| {
         s.job = job;
         s.nonces.clear();
+        s.lanes = [Lane::EMPTY; LANES];
     });
 }
 
@@ -124,6 +133,7 @@ pub extern "C" fn soteria_step(batches: u32) -> i32 {
                     Progress::Done => 1,
                     Progress::Exhausted => ERR_EXHAUSTED,
                 };
+                s.lanes = *solver.lanes();
                 (code, solver.nonces().to_vec())
             }
             Some(Job::Search(c, challenge, best, next)) => {
@@ -149,6 +159,16 @@ pub extern "C" fn soteria_nonces() -> *const u32 {
 #[no_mangle]
 pub extern "C" fn soteria_nonces_len() -> usize {
     STATE.with_borrow(|s| s.nonces.len())
+}
+
+/// Threshold mode: pointer to 4 lanes of 4 little-endian u32s each: the
+/// latest nonce and digest head, then the nonce and head of the lowest digest
+/// since the previous solution (kept once the job is done). A head is `be32(digest[0..4])`, solved when below
+/// the threshold; `u32::MAX` means no attempt yet. All `u32::MAX` heads in
+/// best-effort mode. Valid until the next `soteria_*` call.
+#[no_mangle]
+pub extern "C" fn soteria_lanes() -> *const u32 {
+    STATE.with_borrow(|s| s.lanes.as_ptr().cast())
 }
 
 /// Best-effort mode: the attempts the server will credit for the current
@@ -217,6 +237,53 @@ mod tests {
             assert!(steps > 1, "should have taken several steps");
             assert_eq!(soteria_step(3), 1, "stays done");
         }
+    }
+
+    fn lanes() -> Vec<u32> {
+        // SAFETY: soteria_lanes points at 4 lanes of 4 u32s.
+        unsafe { core::slice::from_raw_parts(soteria_lanes(), 4 * LANES).to_vec() }
+    }
+
+    fn flat(lanes: &[Lane]) -> Vec<u32> {
+        lanes
+            .iter()
+            .flat_map(|l| [l.nonce, l.head, l.best_nonce, l.best_head])
+            .collect()
+    }
+
+    /// `soteria_lanes` is `Solver::lanes` in the documented layout.
+    #[test]
+    fn lanes_match_solver() {
+        let p = Params {
+            threshold: 1 << 27,
+            solutions: 2,
+            ..Default::default()
+        };
+        let challenge = [8u8; 32];
+        let (ptr, len) = submit(&request(21, &p, &challenge, &[]));
+        // SAFETY: from soteria_alloc, used once.
+        assert_eq!(unsafe { soteria_solve(ptr, len) }, 0);
+        assert_eq!(lanes(), flat(&[Lane::EMPTY; LANES]));
+        let c = Challenge::new(21, p);
+        let mut solver = Solver::new(&c, &challenge);
+        let mut steps = 0;
+        loop {
+            let done = soteria_step(3);
+            solver.step(&c, 3);
+            assert_eq!(lanes(), flat(solver.lanes()));
+            assert_ne!(lanes()[1], u32::MAX, "a batch ran");
+            steps += 1;
+            if done == 1 {
+                break;
+            }
+        }
+        assert!(steps > 1, "should have taken several steps");
+
+        let (ptr, len) = submit(&request(4, &p, &challenge, &[]));
+        // SAFETY: from soteria_alloc, used once.
+        assert_eq!(unsafe { soteria_search(ptr, len, 4) }, 0);
+        assert_eq!(soteria_step(10), 0);
+        assert_eq!(lanes(), flat(&[Lane::EMPTY; LANES]), "search mode");
     }
 
     #[test]

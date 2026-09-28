@@ -229,6 +229,8 @@ func TestIssue(t *testing.T) {
 	p, _ := NewParams(randomData[:], 4)
 	for _, want := range []string{
 		`id="soteria_info"`,
+		`id="lanes" aria-hidden="true"`,
+		`<a href="https://en.wikipedia.org/wiki/Proof_of_work">`,
 		hex.EncodeToString(p.Request(nil)),
 		i.fingerprint,
 		"main.js?cacheBuster=" + i.cacheBuster,
