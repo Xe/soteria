@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 52 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 53 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 52 tests across the workspace, ~1 s
+cargo test --release                       # 53 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo test --release bench_solve -- --ignored --nocapture # solve time per Anubis difficulty, 4..=12
@@ -53,7 +53,7 @@ A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
 | `crates/soteria-isa/src/sched.rs` | List scheduler: sequential steps to bundles, respecting hazards |
 | `crates/soteria/src/lib.rs` | Re-exports the ISA. The VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`. wasm32 only |
 | `crates/soteria/src/sha4.rs` | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only) |
-| `crates/soteria/src/gadgets.rs` | The 34 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
+| `crates/soteria/src/gadgets.rs` | The 35 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
 | `crates/soteria/src/best.rs` | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate` |
 | `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
@@ -141,24 +141,43 @@ per sub-challenge, can't reuse compiled blocks either.
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad (up to 1 MiB), threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on, block 0 (one program). The default challenge is
-about 79 bundles and packs about 2.5 slots per bundle, but costs about 458
+about 91 bundles and packs about 2.4 slots per bundle, but costs about 521
 bundle-equivalents per attempt once `fill`, `fold` and `sha256` are charged
-for their real work (it was 361 before the 16 gadgets of roadmap item 7 and
-439 before `MemWalk`, 455 before `VarRot`; `FoldTap` alone is about 129). `packing_stats` prints these.
-`Challenge::attempt_cost` is bundles + `ROUND_COST` per 32-byte mix round
-(`fill`, `fold`) + `SHA_COST` per `sha256`. `expected_work` and `with_budget`
-use it. The two weights (0.25 and 13.0) were measured on the current
+for their real work and loops for their expected iterations (it was 361
+before the 16 gadgets of roadmap item 7, 439 before `MemWalk`, 455 before
+`VarRot` and 458 before `CondRepeat`; `FoldTap` alone is about 129).
+`packing_stats` prints these. `Challenge::attempt_cost` is, per bundle,
+1 + `ROUND_COST` per 32-byte mix round (`fill`, `fold`) + `SHA_COST` per
+`sha256`, times `expected_repeats()` (about 6.86) inside a loop.
+`expected_work` and `with_budget` use it.
+
+`CondRepeat` is the only control flow in gadget programs. Each lane's count is
+`c = 1 + 3 bits of z` (1..=`REPEAT_MAX` = 8), kept in r13, which leaves the
+temp rotation while the body runs. The body is `REPEAT_BODY` = 2 gadgets drawn
+from the mix, excluding the SHA group (a repeated `FoldTap` would swamp the
+program) and `CondRepeat` itself, so loops never nest. Body gadgets draw their
+state words from a pool without z, so the count survives and the loop can be
+undone; `cond_repeat_runs_the_batch_maximum` checks this, since
+`every_gadget_is_injective` didn't notice when z was writable. The loop is
+`do { body; c -= 1 } while pany(c > 0)`, unguarded, so every lane runs the batch
+maximum. Guarding the body per lane would let a scalar or GPU solver skip about
+40% of the loop work SIMD lanes pay for. `Code` in `gadgets.rs` schedules the
+straight-line segments on either side of the loop separately, since the
+scheduler can't move code across a branch. Fuel is no longer the bundle count:
+`gadgets::fuel` counts every loop at `REPEAT_MAX` iterations, and
+`Challenge::fuel` is that for the seed program. The two weights (0.25 and 13.0) were measured on the current
 interpreter by the ignored `calibrate_memory_cost` test; rerun it and update
 the constants after roadmap items 5 or 9, since a faster interpreter makes
 memory relatively more expensive.
 
-Registers: r0 = 0, r1..r8 state, r9..r13 temps (round-robin), r14 scratchpad
-mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
+Registers: r0 = 0, r1..r8 state, r9..r13 temps (round-robin; r13 is the
+`CondRepeat` counter inside a loop), r14 scratchpad mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 128.. arena.
 
 ## Known issues
 
 - **Fuel is not work.** `fill`, `fold` and `sha256` still cost 1 fuel each. Fuel only bounds execution; the work metric is `attempt_cost`. Its weights are interpreter-specific (see above).
+- **`CondRepeat` makes work per batch vary.** A batch's loop runs 1 to 8 times (mean about 6.86), so `attempt_cost` is an expectation, not an exact count. Verification is unaffected because the server reruns the batch, but a fixed-time solver budget sees more spread.
 - **The VM always takes 4 MiB**, whatever the scratchpad. The browser pays it once per worker. The Go verifier pays it per call because it makes a fresh instance each time: verify went from about 1.1 to 1.4 ms and from 4.3 to 8.0 MB allocated per call when `MEM_SIZE` went to 1 MiB (`BenchmarkVerify`). Pooling instances would fix both.
 - **The work metric doesn't model cache misses.** A `MemWalk` hop costs 1 bundle in `attempt_cost` whether it hits L1 or DRAM. On the M-series Mac, ns per bundle-equivalent stays flat (12-15) from 16 KiB to 1 MiB, but a phone with a small L2 may not.
 - **`Vm::store` allocates a `Vec` per store** through its closure. Easy performance fix.
@@ -175,7 +194,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 3. ~~**C-ABI exports.**~~ Done as two modules, each about 68 KB with no imports (sizes are close because the VM and SHA-256 dominate). Both export `memory`, `soteria_alloc(len) -> ptr` and `soteria_fingerprint() -> i64`, and take requests in the `soteria::wire` layout (pinned by `request_layout_is_stable`).
    - **Server** (`soteria_server.wasm`, for wazero): `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`). Both free the buffer, so a pooled instance doesn't leak.
    - **Client** (`soteria_client.wasm`, for a browser Web Worker): one job per instance. `soteria_solve(ptr, len)` or `soteria_search(ptr, len, k)` starts a job (0 or `ERR_*`); `soteria_step(batches)` returns 1 when done, 0 to continue, `ERR_NO_JOB` (-3) or `ERR_EXHAUSTED` (-4); `soteria_nonces()`/`soteria_nonces_len()` point at the current nonces; `soteria_estimate()` is the best-effort credit. Built on `gadgets::Solver`, which `solver_steps_match_solve` checks against `Challenge::solve`. Verified end to end in V8 (Node 26): client solves and searches, server verifies, estimates agree. `ERR_EXHAUSTED` (2^30 batches) is not covered by a test. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
-4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 1.4 ms per verify at difficulty 16 (M-series; 1.1 ms before item 8). No `sync.Pool` yet. Anubis `difficulty` d is in bits, not the sha256 method's hex digits: 2^d expected attempts (4 chained solutions, `threshold = 2^(34-d)`, 256-nonce program blocks), max 33. Difficulty 4n asks for as many attempts as sha256 difficulty n, so an Anubis policy written for sha256 needs its difficulty multiplied by 4. On an M-series Mac under wasmtime, `bench_solve` puts difficulty 12 (4096 attempts) at about 32 ms mean and 87 ms worst of 64, at about 129k nonces/s; each extra bit doubles it. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
+4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 1.4 ms per verify at difficulty 16 (M-series; 1.1 ms before item 8). No `sync.Pool` yet. Anubis `difficulty` d is in bits, not the sha256 method's hex digits: 2^d expected attempts (4 chained solutions, `threshold = 2^(34-d)`, 256-nonce program blocks), max 33. Difficulty 4n asks for as many attempts as sha256 difficulty n, so an Anubis policy written for sha256 needs its difficulty multiplied by 4. On an M-series Mac under wasmtime, `bench_solve` puts difficulty 12 (4096 attempts) at about 36 ms mean and 100 ms worst of 64, at about 116k nonces/s (32 ms and 129k before `CondRepeat`); each extra bit doubles it. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
 6. ~~**Program blocks from `nonce >> k`.**~~ Done: `Params::block`, `block_seed(seed, sub, nonce >> k)`, `Challenge::program_for`, tested by `blocks_get_their_own_programs` plus block variants of `scheduler_matches_sequential`, `solver_steps_match_solve` and `solve_verify_chained_and_not`. A default program builds in about 16 us, 0.62 batch attempts (`calibrate_memory_cost` prints it). The Anubis method uses k = 8 (about 1% client overhead); verify went from about 0.9 to 1.1 ms since the server builds one program per solution. Item 5's compiled `search(base, batches)` export should work per block.
 7. ~~**`mulhu`, `pmov`, full-entropy taps.**~~ Done: `mulhu` (high half of an unsigned 32×32 multiply) and `pmov` (predicate → -1/0), tested by `mulhu_and_pmov_match_scalar`. `SqrtTap` (on `y >> 1`, so never NaN) and `DivTap` xor in `fbits` of the result. `ClzTap` uses `mulhu(clz + imm, y)` instead, since `fbits` of a 0..32 count is still 33 values. Also added 16 gadgets, all in the existing six `Mix` groups so the wire layout is unchanged: `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap` (alu); `MulHiTap`, `CmpMaskTap` (taps); `FMulTap`, `FAddTap` (raw bits via `ffrom`), `HypotTap` (float); `MemChase`, `MemRmw`, `MemXorLoad` (memory); `CondNegate`, `CondWordRotate` (lanes); `ShaFeistel` (SHA of every word but x, xored into x: a bijective SHA gadget), `FoldTap` (a mid-program `fold`) (sha). `scheduler_matches_sequential` now asserts every gadget ran. Adding gadgets changed which program each seed builds.

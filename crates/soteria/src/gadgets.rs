@@ -21,14 +21,15 @@
 //! inputs to f, which is invertible whatever f is. That's what lets lossy ops
 //! like clz, popcnt, float sqrt and memory loads feed the state safely.
 //!
-//! Registers: r0 = 0, r1..r8 = state, r9..r13 = temps, r14 = scratchpad
-//! mask, r15 = nonce. p1..p6 = temps, p15 = solved. f0..f3 = temps.
+//! Registers: r0 = 0, r1..r8 = state, r9..r13 = temps (r13 is the
+//! `CondRepeat` counter inside its loop), r14 = scratchpad mask, r15 = nonce.
+//! p1..p6 = temps, p15 = solved. f0..f3 = temps.
 //! Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 //! 128..scratchpad the arena, expanded from sha256(challenge || nonce).
 
 use crate::puzzle::SplitMix;
 use crate::sched::{schedule, sequential, Step};
-use crate::{lanes, sha4, Op::*, Program, Slot, Vm, ARENA_START, LANES, MEM_SIZE};
+use crate::{lanes, sha4, Bundle, Op::*, Program, Slot, Vm, ARENA_START, LANES, MEM_SIZE};
 use core::cell::RefCell;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,9 +82,11 @@ pub enum Gadget {
     MemWalk,
     // ALU, data-dependent rotate
     VarRot,
+    // Control: a data-dependent loop
+    CondRepeat,
 }
 
-pub const ALL: [Gadget; 34] = {
+pub const ALL: [Gadget; 35] = {
     use Gadget::*;
     [
         AddRot,
@@ -120,6 +123,7 @@ pub const ALL: [Gadget; 34] = {
         FoldTap,
         MemWalk,
         VarRot,
+        CondRepeat,
     ]
 };
 
@@ -156,7 +160,7 @@ impl Mix {
                 self.alu,
                 &[
                     AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift, ChTap, MajTap,
-                    SigmaTap, MulAddTap, VarRot,
+                    SigmaTap, MulAddTap, VarRot, CondRepeat,
                 ],
             ),
             (self.taps, &[PopcntTap, ClzTap, MulHiTap, CmpMaskTap]),
@@ -241,19 +245,35 @@ pub const SHA_COST: f64 = 13.0;
 const STATE: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Dependent loads in one `MemWalk`.
 pub const WALK_HOPS: usize = 8;
+/// Most iterations one lane of a `CondRepeat` asks for.
+pub const REPEAT_MAX: u32 = 8;
+/// Gadgets in a `CondRepeat` body.
+pub const REPEAT_BODY: usize = 2;
 const MASK: u8 = 14;
+/// `CondRepeat`'s counter, taken out of the temps while its body runs.
+const COUNTER: u8 = 13;
 
 pub(crate) struct Temps {
     r: usize,
     p: usize,
     f: usize,
+    /// Integer temps are r9 .. r9 + n.
+    n: usize,
 }
 
 impl Temps {
+    fn new() -> Self {
+        Temps {
+            r: 0,
+            p: 0,
+            f: 0,
+            n: 5,
+        }
+    }
     // Round-robin so neighbouring gadgets use different temps and can co-issue.
     fn r(&mut self) -> u8 {
         self.r += 1;
-        9 + (self.r % 5) as u8
+        9 + (self.r % self.n) as u8
     }
     fn p(&mut self) -> u8 {
         self.p += 1;
@@ -283,15 +303,118 @@ fn sha_block(t: u8, steps: &mut Vec<Step>, reload: bool) {
     }
 }
 
-/// Emit one gadget as sequential steps.
-pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec<Step>) {
+/// A program under construction: bundles so far, plus straight-line steps
+/// not yet scheduled. Control flow splits the steps into separately
+/// scheduled segments, since the scheduler can't move code across a branch.
+struct Code {
+    bundles: Vec<Bundle>,
+    steps: Vec<Step>,
+    unscheduled: bool,
+}
+
+impl Code {
+    fn new(unscheduled: bool) -> Self {
+        Code {
+            bundles: Vec::new(),
+            steps: Vec::new(),
+            unscheduled,
+        }
+    }
+
+    fn flush(&mut self) {
+        let b = if self.unscheduled {
+            sequential(&self.steps)
+        } else {
+            schedule(&self.steps)
+        };
+        self.bundles.extend(b);
+        self.steps.clear();
+    }
+
+    fn finish(mut self) -> Program {
+        self.flush();
+        let halt = Slot::new(Halt, 0, 0, 0, 0);
+        // Share the last bundle unless it already holds a control op.
+        let last = self.bundles.last_mut();
+        let last = last.filter(|b| !b.iter().any(|s| matches!(s.op, Halt | Subleq | Bp)));
+        match last.and_then(|b| b.iter().position(|s| s.op == Nop).map(|i| (b, i))) {
+            Some((b, i)) => b[i] = halt,
+            None => self.bundles.push(crate::bundle(&[halt])),
+        }
+        Program::new(self.bundles).unwrap()
+    }
+}
+
+/// Emit one gadget, drawing its state words from `pool`.
+fn emit_any(
+    g: Gadget,
+    pool: &[u8],
+    mix: &Mix,
+    rng: &mut SplitMix,
+    tmp: &mut Temps,
+    code: &mut Code,
+) {
+    if g != Gadget::CondRepeat {
+        return emit(g, pool, rng, tmp, &mut code.steps);
+    }
+    // Run REPEAT_BODY gadgets c = 1 + (3 bits of z) times per lane. The
+    // loop continues while any lane's count is positive, so every lane runs
+    // the batch maximum: a scalar solver can't skip iterations that SIMD
+    // lanes pay for. z is kept out of the body's pool, so the count
+    // survives the loop and the loop can be undone.
+    let z = pool[rng.below(pool.len() as u64) as usize];
+    let s = rng.below(30) as i32;
+    code.steps.extend([
+        one(Shl, COUNTER, z, 0, 29 - s),
+        one(Shr, COUNTER, COUNTER, 0, 29),
+        one(Addi, COUNTER, COUNTER, 0, 1),
+    ]);
+    code.flush();
+    let start = code.bundles.len() as i32;
+    let body: Vec<u8> = pool.iter().copied().filter(|&r| r != z).collect();
+    tmp.n -= 1;
+    // No nested loops, and nothing from the SHA group: a FoldTap repeated
+    // 8 times would swamp the rest of the program. CondRepeat is an ALU
+    // gadget, so a mix that picks it can always pick something else.
+    for _ in 0..REPEAT_BODY {
+        let g = loop {
+            use Gadget::*;
+            match mix.pick(rng) {
+                CondRepeat | ShaAnchor | ShaFeistel | FoldTap => continue,
+                g => break g,
+            }
+        };
+        emit(g, &body, rng, tmp, &mut code.steps);
+    }
+    tmp.n += 1;
+    let (p, q) = (tmp.p(), tmp.p());
+    code.steps.extend([
+        one(Addi, COUNTER, COUNTER, 0, -1),
+        one(CmpLt, p, 0, COUNTER, 0),
+        one(PAny, q, p, 0, 0),
+    ]);
+    code.flush();
+    code.bundles
+        .push(crate::bundle(&[Slot::new(Bp, 0, q, 0, start)]));
+}
+
+/// Emit one straight-line gadget as sequential steps.
+pub(crate) fn emit(
+    g: Gadget,
+    pool: &[u8],
+    rng: &mut SplitMix,
+    tmp: &mut Temps,
+    out: &mut Vec<Step>,
+) {
     use Gadget::*;
     // Distinct state words: x is the target, y/z/w are inputs (never x).
-    let mut regs = STATE;
+    let mut regs = pool.to_vec();
     for i in (1..regs.len()).rev() {
         regs.swap(i, rng.below(i as u64 + 1) as usize);
     }
-    let [x, y, z, w, u, v, ..] = regs;
+    let &[x, y, z, w, u, v, ..] = regs.as_slice() else {
+        unreachable!("pools hold at least 6 words")
+    };
     let k = 1 + rng.below(31) as i32;
     let odd = (rng.next() as i32) | 1;
     let imm = rng.next() as i32;
@@ -556,6 +679,7 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
                 one(Xor, x, x, t, 0),
             ]);
         }
+        CondRepeat => unreachable!("emit_any builds loops"),
         VarRot => {
             // x = rotr(x + z, y & 31). WASM SIMD rotates every lane by the
             // same scalar, so the per-lane amount is a barrel: bit b of y,
@@ -665,29 +789,37 @@ impl Challenge {
         }
     }
 
-    /// Bundles per attempt. Straight-line code, so this is also the exact fuel.
+    /// Bundles in the program. Without `CondRepeat` this is also the exact
+    /// fuel; with it, see `fuel`.
     pub fn bundles(&self) -> usize {
         self.program.bundles().len()
     }
 
-    /// Work per attempt in bundle-equivalents. `fill`, `fold` and `sha256`
-    /// cost 1 fuel each but do far more work, so they're charged by what they
-    /// compute: mix rounds over the scratchpad and SHA-256 compressions.
+    /// Fuel that always suffices for the `seed` program.
+    pub fn fuel(&self) -> u64 {
+        fuel(&self.program)
+    }
+
+    /// Expected work per attempt in bundle-equivalents. `fill`, `fold` and
+    /// `sha256` cost 1 fuel each but do far more work, so they're charged by
+    /// what they compute: mix rounds over the scratchpad and SHA-256
+    /// compressions. Loop bundles count `expected_repeats` times.
     pub fn attempt_cost(&self) -> f64 {
         let s = self.params.scratchpad as f64;
-        let mem: f64 = self
-            .program
-            .bundles()
-            .iter()
-            .flatten()
-            .map(|slot| match slot.op {
-                Sha256 => SHA_COST,
-                Fill => (s - ARENA_START as f64) / 32.0 * ROUND_COST,
-                Fold => (s / 32.0 + 4.0) * ROUND_COST,
-                _ => 0.0,
-            })
-            .sum();
-        self.bundles() as f64 + mem
+        let runs = runs(&self.program, expected_repeats());
+        let cost = self.program.bundles().iter().map(|b| {
+            let mem: f64 = b
+                .iter()
+                .map(|slot| match slot.op {
+                    Sha256 => SHA_COST,
+                    Fill => (s - ARENA_START as f64) / 32.0 * ROUND_COST,
+                    Fold => (s / 32.0 + 4.0) * ROUND_COST,
+                    _ => 0.0,
+                })
+                .sum();
+            1.0 + mem
+        });
+        cost.zip(runs).map(|(c, n)| c * n).sum()
     }
 
     /// Expected bundle-equivalents to solve every sub-challenge: the single
@@ -734,7 +866,7 @@ impl Challenge {
         base: u32,
     ) -> Option<[(bool, [u8; 32]); LANES]> {
         // The memory image is the sub-challenge, then zeros.
-        let fuel = program.bundles().len() as u64;
+        let fuel = fuel(program);
         let mut slot = self.vm.borrow_mut();
         let vm = match slot.as_mut() {
             Some(vm) => {
@@ -805,14 +937,15 @@ impl Challenge {
 fn compile(seed: u64, params: &Params, unscheduled: bool) -> (Vec<Gadget>, Program) {
     let s = params.scratchpad;
     let mut rng = SplitMix(seed);
-    let mut tmp = Temps { r: 0, p: 0, f: 0 };
-
-    let mut steps: Vec<Step> = vec![
+    let mut tmp = Temps::new();
+    let mut code = Code::new(unscheduled);
+    let steps = &mut code.steps;
+    steps.extend([
         one(St, 0, 0, 15, 32),
         one(Li, MASK, 0, 0, (s - 1) as i32),
         one(Li, 9, 0, 0, 64),
         one(Sha256, 0, 0, 9, 0),
-    ];
+    ]);
     for (i, &r) in STATE.iter().enumerate() {
         steps.push(one(Ld, r, 0, 0, 64 + 4 * i as i32));
     }
@@ -826,8 +959,9 @@ fn compile(seed: u64, params: &Params, unscheduled: bool) -> (Vec<Gadget>, Progr
         .map(|_| params.mix.pick(&mut rng))
         .collect();
     for &g in &gadgets {
-        emit(g, &mut rng, &mut tmp, &mut steps);
+        emit_any(g, &STATE, &params.mix, &mut rng, &mut tmp, &mut code);
     }
+    let steps = &mut code.steps;
 
     // Epilogue: block = state (64..96) || fold(scratchpad) (96..128), then hash.
     for (i, &r) in STATE.iter().enumerate() {
@@ -846,19 +980,37 @@ fn compile(seed: u64, params: &Params, unscheduled: bool) -> (Vec<Gadget>, Progr
         one(CmpLtu, 15, 9, 10, 0),
     ]);
 
-    let mut bundles = if unscheduled {
-        sequential(&steps)
-    } else {
-        schedule(&steps)
-    };
-    let halt = Slot::new(Halt, 0, 0, 0, 0);
-    let last = bundles.last_mut().unwrap();
-    match last.iter().position(|s| s.op == Nop) {
-        Some(i) => last[i] = halt,
-        None => bundles.push(crate::bundle(&[halt])),
-    }
+    (gadgets, code.finish())
+}
 
-    (gadgets, Program::new(bundles).unwrap())
+/// Mean of the batch's `CondRepeat` iterations: the largest of LANES
+/// uniform counts in 1..=REPEAT_MAX.
+pub fn expected_repeats() -> f64 {
+    let m = REPEAT_MAX as f64;
+    (0..REPEAT_MAX)
+        .map(|k| 1.0 - (k as f64 / m).powi(LANES as i32))
+        .sum()
+}
+
+/// Times each bundle runs, with `n` iterations per loop. Loops are the
+/// backward `bp`s `CondRepeat` emits, and never nest.
+fn runs(program: &Program, n: f64) -> Vec<f64> {
+    let b = program.bundles();
+    let mut runs = vec![1.0; b.len()];
+    for (end, bundle) in b.iter().enumerate() {
+        for s in bundle
+            .iter()
+            .filter(|s| s.op == Bp && s.imm as usize <= end)
+        {
+            runs[s.imm as usize..=end].iter_mut().for_each(|r| *r = n);
+        }
+    }
+    runs
+}
+
+/// Fuel that always suffices: every loop at REPEAT_MAX iterations.
+pub fn fuel(program: &Program) -> u64 {
+    runs(program, REPEAT_MAX as f64).iter().sum::<f64>() as u64
 }
 
 /// Batches in the nonce space: `batch * LANES` must fit in a u32.
@@ -938,10 +1090,9 @@ fn derive(challenge: &[u8; 32], i: u32) -> [u8; 32] {
 #[cfg(test)]
 pub(crate) fn solo(g: Gadget, seed: u64) -> Program {
     let mut rng = SplitMix(seed);
-    let mut tmp = Temps { r: 0, p: 0, f: 0 };
-    let mut steps = vec![one(Li, MASK, 0, 0, 0xFFFF)];
-    emit(g, &mut rng, &mut tmp, &mut steps);
-    let mut b = schedule(&steps);
-    b.push(crate::bundle(&[Slot::new(Halt, 0, 0, 0, 0)]));
-    Program::new(b).unwrap()
+    let mut tmp = Temps::new();
+    let mut code = Code::new(false);
+    code.steps.push(one(Li, MASK, 0, 0, 0xFFFF));
+    emit_any(g, &STATE, &Mix::default(), &mut rng, &mut tmp, &mut code);
+    code.finish()
 }

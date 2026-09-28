@@ -202,7 +202,8 @@ mod tests {
             // SAFETY: from soteria_alloc, used once.
             assert_eq!(unsafe { soteria_solve(ptr, len) }, 0);
             let mut steps = 0;
-            while soteria_step(3) == 0 {
+            // One batch per step: a lucky seed can finish in a few batches.
+            while soteria_step(1) == 0 {
                 steps += 1;
                 assert!(nonces().len() < 3);
             }

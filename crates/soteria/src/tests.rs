@@ -285,10 +285,11 @@ mod gadget_tests {
         let mut rng = puzzle::SplitMix(0xABCD);
         // `solo` masks addresses to 64 KiB.
         let image: Vec<u8> = (0..1 << 16).map(|_| rng.next() as u8).collect();
-        let mut vm = Vm::new(&image, 0, 64);
+        let mut vm = Vm::new(&image, 0, 0);
         for &g in &gadgets::ALL {
             for seed in 0..8 {
                 let prog = gadgets::solo(g, seed);
+                let fuel = gadgets::fuel(&prog);
                 let mut seen = std::collections::HashMap::new();
                 for run in 0..512usize {
                     let (i, j) = (run % 8, (run / 8) % 8);
@@ -299,7 +300,7 @@ mod gadget_tests {
                     nudged[j] = nudged[j].wrapping_add(1 + (run as u32 & 7));
                     let random: [u32; 8] = core::array::from_fn(|_| rng.next() as u32);
                     let inputs = [base, swapped, nudged, random];
-                    vm.reset(&image, 0, 64);
+                    vm.reset(&image, 0, fuel);
                     for w in 0..8 {
                         vm.r[1 + w] = from_lanes(core::array::from_fn(|l| inputs[l][w]));
                     }
@@ -328,7 +329,7 @@ mod gadget_tests {
             ..Default::default()
         };
         let c = Challenge::new(4, p);
-        let fuel = c.bundles() as u64;
+        let fuel = c.fuel();
         let (a, b) = ([1u8; 32], [2u8; 32]);
         let mut reused = Vm::new(&a, 0, fuel);
         reused.run(&c.program).unwrap();
@@ -691,9 +692,76 @@ mod gadget_tests {
         );
         let rel = c.expected_work() / 2e6;
         assert!((0.99..1.01).contains(&rel), "{rel}");
-        let mut vm = Vm::new(&[], 0, c.bundles() as u64);
-        vm.run(&c.program).unwrap();
-        assert_eq!(vm.fuel, 0);
+        // Straight-line programs use their fuel exactly; loops leave some
+        // over unless every one runs REPEAT_MAX times.
+        for seed in 0..16 {
+            let c = Challenge::new(seed, Params::default());
+            let mut vm = Vm::new(&[], 0, c.fuel());
+            vm.run(&c.program).unwrap();
+            if !c.gadgets.contains(&gadgets::Gadget::CondRepeat) {
+                assert_eq!(vm.fuel, 0, "seed {seed}");
+                assert_eq!(c.fuel(), c.bundles() as u64);
+            }
+        }
+    }
+
+    /// A `CondRepeat` batch loops as often as its hungriest lane, and each
+    /// lane asks for 1..=REPEAT_MAX iterations. The word the count comes
+    /// from leaves the loop unchanged, or the loop couldn't be undone
+    /// (`every_gadget_is_injective` is too coarse to notice).
+    #[test]
+    fn cond_repeat_runs_the_batch_maximum() {
+        let mut rng = puzzle::SplitMix(0xC0DE);
+        let mut counts = HashSet::new();
+        for seed in 0..32 {
+            let prog = gadgets::solo(gadgets::Gadget::CondRepeat, seed);
+            let b = prog.bundles();
+            let (end, start) = b
+                .iter()
+                .enumerate()
+                .find_map(|(i, b)| {
+                    b.iter()
+                        .find(|s| s.op == Op::Bp)
+                        .map(|s| (i, s.imm as usize))
+                })
+                .expect("a loop");
+            let (len, fixed) = ((end - start + 1) as u64, b.len() as u64);
+            let z = b[..start]
+                .iter()
+                .flatten()
+                .find(|s| s.op == Op::Shl && s.d == 13)
+                .expect("the counter")
+                .a as usize;
+            let iterations = |state: [[u32; 8]; 4]| {
+                let mut vm = Vm::new(&[], 0, gadgets::fuel(&prog));
+                for w in 0..8 {
+                    vm.r[1 + w] = from_lanes(core::array::from_fn(|l| state[l][w]));
+                }
+                vm.run(&prog).unwrap();
+                let zs: [u32; 4] = core::array::from_fn(|l| state[l][z - 1]);
+                assert_eq!(lanes(vm.r[z]), zs, "seed {seed}: the body wrote r{z}");
+                let ran = gadgets::fuel(&prog) - vm.fuel - fixed;
+                assert_eq!(ran % len, 0);
+                1 + ran / len
+            };
+            let batch: [[u32; 8]; 4] =
+                core::array::from_fn(|_| core::array::from_fn(|_| rng.next() as u32));
+            let alone: Vec<u64> = batch.iter().map(|&s| iterations([s; 4])).collect();
+            assert!(alone
+                .iter()
+                .all(|n| (1..=gadgets::REPEAT_MAX as u64).contains(n)));
+            assert_eq!(
+                iterations(batch),
+                *alone.iter().max().unwrap(),
+                "seed {seed}"
+            );
+            counts.extend(alone);
+        }
+        assert_eq!(
+            counts.len(),
+            gadgets::REPEAT_MAX as usize,
+            "every count occurs"
+        );
     }
 
     /// Same seed and budget at different scratchpad sizes: the memory term
@@ -761,7 +829,7 @@ mod gadget_tests {
             );
             let sub = [7u8; 32];
             let digest = |image: &[u8]| {
-                let mut vm = Vm::new(image, 0, c.bundles() as u64);
+                let mut vm = Vm::new(image, 0, c.fuel());
                 vm.run(&c.program).unwrap();
                 vm.mem[64..96].to_vec()
             };
@@ -777,7 +845,7 @@ mod gadget_tests {
     fn arena_depends_on_challenge_and_nonce() {
         let c = Challenge::new(2, Params::default());
         let arena = |sub: &[u8; 32], base: u32| {
-            let mut vm = Vm::new(sub, base, c.bundles() as u64);
+            let mut vm = Vm::new(sub, base, c.fuel());
             vm.run(&c.program).unwrap();
             (0..LANES)
                 .map(|l| vm.mem[l * MEM_SIZE + 4096..][..64].to_vec())
