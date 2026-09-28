@@ -280,6 +280,7 @@ mod gadget_tests {
 
     #[test]
     fn scheduler_matches_sequential() {
+        let mut seen = HashSet::new();
         for seed in 0..20 {
             let block = [0, 5][seed as usize % 2];
             let p = Params {
@@ -298,6 +299,7 @@ mod gadget_tests {
             let packed = Challenge::new(seed, p);
             let serial = Challenge::new_unscheduled(seed, p);
             assert_eq!(packed.gadgets, serial.gadgets);
+            seen.extend(packed.gadgets.iter().map(|&g| g as usize));
             let sub = [seed as u8; 32];
             for base in [0, 400, 404, 8000] {
                 assert_eq!(
@@ -307,11 +309,12 @@ mod gadget_tests {
                 );
             }
         }
+        assert_eq!(seen.len(), gadgets::ALL.len(), "some gadget never ran");
     }
 
     #[test]
     fn packing_stats() {
-        let (mut ratios, mut costs) = (vec![], vec![]);
+        let (mut ratios, mut costs, mut bundles) = (vec![], vec![], 0);
         for seed in 0..50 {
             let c = Challenge::new(seed, Params::default());
             let slots: usize = c
@@ -323,6 +326,7 @@ mod gadget_tests {
                 .count();
             ratios.push(slots as f64 / c.bundles() as f64);
             costs.push(c.attempt_cost());
+            bundles += c.bundles();
             let serial = Challenge::new_unscheduled(seed, Params::default()).bundles();
             if seed == 0 {
                 println!(
@@ -334,6 +338,7 @@ mod gadget_tests {
             }
         }
         let avg = ratios.iter().sum::<f64>() / ratios.len() as f64;
+        println!("average bundles: {:.0}", bundles as f64 / 50.0);
         println!("average slots per bundle: {avg:.2}");
         println!(
             "average attempt cost: {:.0} bundle-equivalents",

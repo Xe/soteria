@@ -51,7 +51,7 @@ A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
 | `crates/soteria-isa/src/sched.rs` | List scheduler: sequential steps to bundles, respecting hazards |
 | `crates/soteria/src/lib.rs` | Re-exports the ISA. The VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`. wasm32 only |
 | `crates/soteria/src/sha4.rs` | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only) |
-| `crates/soteria/src/gadgets.rs` | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
+| `crates/soteria/src/gadgets.rs` | The 32 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
 | `crates/soteria/src/best.rs` | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate` |
 | `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
@@ -138,8 +138,10 @@ per sub-challenge, can't reuse compiled blocks either.
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad, threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on, block 0 (one program). The default challenge is
-about 63 bundles and packs about 2.8 slots per bundle, but costs about 361 bundle-equivalents per attempt
-once `fill`, `fold` and `sha256` are charged for their real work.
+about 60 bundles and packs about 2.7 slots per bundle, but costs about 439
+bundle-equivalents per attempt once `fill`, `fold` and `sha256` are charged
+for their real work (it was 361 before the 16 gadgets of roadmap item 7;
+`FoldTap` alone is about 129). `packing_stats` prints these.
 `Challenge::attempt_cost` is bundles + `ROUND_COST` per 32-byte mix round
 (`fill`, `fold`) + `SHA_COST` per `sha256`. `expected_work` and `with_budget`
 use it. The two weights (0.25 and 13.0) were measured on the current
@@ -158,6 +160,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 - **The read phase loads every operand for every slot**, needed or not.
 - `Write::Sha` is also used for `fold` output; it should be renamed to something like `Write::Mem32`.
 - `hashcash` only checks the first digest word, so difficulty is capped at 32 bits.
+- **Bijectivity is per gadget, not across gadgets.** Memory can hold a copy of a state word's current value (after `ShaAnchor`, `mem[64..96]` equals r1..r8; `MemScatter` stores a state word as is). A later memory tap whose address lands there computes `x ^= f(x)`. `every_gadget_is_injective` tests gadgets alone, so it can't see this. `ShaFeistel` zeroes x's word in the block for this reason. The odds per load are small (8 words of a 4096-word scratchpad), but a fix would mean keeping memory taps away from state copies.
 - `puzzle.rs` is legacy. Keep it working, but build new features on `gadgets.rs`.
 
 ## Roadmap (suggested order)
@@ -170,8 +173,8 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 0.9 ms per verify at difficulty 4 (M-series). No `sync.Pool` yet. Anubis `difficulty` d means 16^d expected attempts (4 chained solutions, `threshold = 2^(34-4d)`, 256-nonce program blocks), max 8. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
 6. ~~**Program blocks from `nonce >> k`.**~~ Done: `Params::block`, `block_seed(seed, sub, nonce >> k)`, `Challenge::program_for`, tested by `blocks_get_their_own_programs` plus block variants of `scheduler_matches_sequential`, `solver_steps_match_solve` and `solve_verify_chained_and_not`. A default program builds in about 16 us, 0.62 batch attempts (`calibrate_memory_cost` prints it). The Anubis method uses k = 8 (about 1% client overhead); verify went from about 0.9 to 1.1 ms since the server builds one program per solution. Item 5's compiled `search(base, batches)` export should work per block.
-7. ~~**`mulhu`, `pmov`, full-entropy taps.**~~ Done: `mulhu` (high half of an unsigned 32×32 multiply) and `pmov` (predicate → -1/0), tested by `mulhu_and_pmov_match_scalar`. `SqrtTap` (on `y >> 1`, so never NaN) and `DivTap` xor in `fbits` of the result. `ClzTap` uses `mulhu(clz + imm, y)` instead, since `fbits` of a 0..32 count is still 33 values.
-8. **Latency-bound pointer-chase gadget** plus a larger arena (256 KiB–1 MiB per lane) to narrow the phone/desktop gap. This means raising `MEM_SIZE` and address masks from 16 bits.
+7. ~~**`mulhu`, `pmov`, full-entropy taps.**~~ Done: `mulhu` (high half of an unsigned 32×32 multiply) and `pmov` (predicate → -1/0), tested by `mulhu_and_pmov_match_scalar`. `SqrtTap` (on `y >> 1`, so never NaN) and `DivTap` xor in `fbits` of the result. `ClzTap` uses `mulhu(clz + imm, y)` instead, since `fbits` of a 0..32 count is still 33 values. Also added 16 gadgets, all in the existing six `Mix` groups so the wire layout is unchanged: `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap` (alu); `MulHiTap`, `CmpMaskTap` (taps); `FMulTap`, `FAddTap` (raw bits via `ffrom`), `HypotTap` (float); `MemChase`, `MemRmw`, `MemXorLoad` (memory); `CondNegate`, `CondWordRotate` (lanes); `ShaFeistel` (SHA of every word but x, xored into x: a bijective SHA gadget), `FoldTap` (a mid-program `fold`) (sha). `scheduler_matches_sequential` now asserts every gadget ran. Adding gadgets changed which program each seed builds.
+8. **Latency-bound pointer-chase gadget** (`MemChase` is a two-load start) plus a larger arena (256 KiB–1 MiB per lane) to narrow the phone/desktop gap. This means raising `MEM_SIZE` and address masks from 16 bits.
 9. **Interpreter performance:** pre-decode, fixed-size pending writes, no allocation in the hot path. Protect it with a bundle-by-bundle differential test against the current `Vm`.
 10. **Later:** a lane visualizer for the Anubis challenge page, the WIT `compiler`/`verifier` interfaces (`jco transpile` for browsers), and the Techaro datasheet.
 

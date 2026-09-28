@@ -55,13 +55,65 @@ pub enum Gadget {
     WordRotate,
     // Expensive, SIMD-friendly
     ShaAnchor,
+    // ALU, SHA-2 style boolean functions and products
+    ChTap,
+    MajTap,
+    SigmaTap,
+    MulAddTap,
+    // Multiply-high and predicate taps
+    MulHiTap,
+    CmpMaskTap,
+    // Float taps
+    FMulTap,
+    FAddTap,
+    HypotTap,
+    // Memory
+    MemChase,
+    MemRmw,
+    MemXorLoad,
+    // Lane-level data movement
+    CondNegate,
+    CondWordRotate,
+    // Expensive
+    ShaFeistel,
+    FoldTap,
 }
 
-pub const ALL: [Gadget; 16] = {
+pub const ALL: [Gadget; 32] = {
     use Gadget::*;
     [
-        AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift, PopcntTap, ClzTap, SqrtTap,
-        DivTap, MemLoad, MemScatter, CondSwap, WordRotate, ShaAnchor,
+        AddRot,
+        XorRot,
+        SubRot,
+        MulOdd,
+        AddBswap,
+        BswapTap,
+        XorShift,
+        PopcntTap,
+        ClzTap,
+        SqrtTap,
+        DivTap,
+        MemLoad,
+        MemScatter,
+        CondSwap,
+        WordRotate,
+        ShaAnchor,
+        ChTap,
+        MajTap,
+        SigmaTap,
+        MulAddTap,
+        MulHiTap,
+        CmpMaskTap,
+        FMulTap,
+        FAddTap,
+        HypotTap,
+        MemChase,
+        MemRmw,
+        MemXorLoad,
+        CondNegate,
+        CondWordRotate,
+        ShaFeistel,
+        FoldTap,
     ]
 };
 
@@ -96,13 +148,22 @@ impl Mix {
         let groups: [(u32, &[Gadget]); 6] = [
             (
                 self.alu,
-                &[AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift],
+                &[
+                    AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift, ChTap, MajTap,
+                    SigmaTap, MulAddTap,
+                ],
             ),
-            (self.taps, &[PopcntTap, ClzTap]),
-            (self.float, &[SqrtTap, DivTap]),
-            (self.memory, &[MemLoad, MemScatter]),
-            (self.lanes, &[CondSwap, WordRotate]),
-            (self.sha, &[ShaAnchor]),
+            (self.taps, &[PopcntTap, ClzTap, MulHiTap, CmpMaskTap]),
+            (self.float, &[SqrtTap, DivTap, FMulTap, FAddTap, HypotTap]),
+            (
+                self.memory,
+                &[MemLoad, MemScatter, MemChase, MemRmw, MemXorLoad],
+            ),
+            (
+                self.lanes,
+                &[CondSwap, WordRotate, CondNegate, CondWordRotate],
+            ),
+            (self.sha, &[ShaAnchor, ShaFeistel, FoldTap]),
         ];
         let total: u32 = groups.iter().map(|g| g.0).sum();
         assert!(total > 0, "mix needs at least one nonzero weight");
@@ -221,7 +282,7 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
     for i in (1..regs.len()).rev() {
         regs.swap(i, rng.below(i as u64 + 1) as usize);
     }
-    let [x, y, z, w, ..] = regs;
+    let [x, y, z, w, u, v, ..] = regs;
     let k = 1 + rng.below(31) as i32;
     let odd = (rng.next() as i32) | 1;
     let imm = rng.next() as i32;
@@ -330,6 +391,173 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
             ]);
         }
         ShaAnchor => sha_block(tmp.r(), out, true),
+        ChTap => {
+            // SHA-256 Ch: bits of z where y is set, else bits of w.
+            let t = tmp.r();
+            out.extend([
+                one(Xor, t, z, w, 0),
+                one(And, t, t, y, 0),
+                one(Xor, t, t, w, 0),
+                one(Add, x, x, t, 0),
+            ]);
+        }
+        MajTap => {
+            // SHA-256 Maj: bitwise majority of y, z, w.
+            let (t1, t2) = (tmp.r(), tmp.r());
+            out.extend([
+                one(And, t1, y, z, 0),
+                one(Or, t2, y, z, 0),
+                one(And, t2, t2, w, 0),
+                one(Or, t1, t1, t2, 0),
+                one(Xor, x, x, t1, 0),
+            ]);
+        }
+        SigmaTap => {
+            // SHA-256 style Sigma: three rotations of y xored together.
+            let (t1, t2) = (tmp.r(), tmp.r());
+            let k2 = 1 + rng.below(31) as i32;
+            let k3 = 1 + rng.below(31) as i32;
+            out.extend([
+                one(Rotr, t1, y, 0, k),
+                one(Rotr, t2, y, 0, k2),
+                one(Xor, t1, t1, t2, 0),
+                one(Rotr, t2, y, 0, k3),
+                one(Xor, t1, t1, t2, 0),
+                one(Add, x, x, t1, 0),
+            ]);
+        }
+        MulAddTap => {
+            let t = tmp.r();
+            out.extend([one(Mul, t, y, z, 0), one(Add, x, x, t, 0)]);
+        }
+        MulHiTap => {
+            let t = tmp.r();
+            out.extend([one(Mulhu, t, y, z, 0), one(Xor, x, x, t, 0)]);
+        }
+        CmpMaskTap => {
+            // x += y < z ? w : 0
+            let (p, t) = (tmp.p(), tmp.r());
+            out.extend([
+                one(CmpLtu, p, y, z, 0),
+                one(PMov, t, p, 0, 0),
+                one(And, t, t, w, 0),
+                one(Add, x, x, t, 0),
+            ]);
+        }
+        FMulTap => {
+            let (fa, fb, t) = (tmp.f(), tmp.f(), tmp.r());
+            out.extend([
+                one(FCvt, fa, y, 0, 0),
+                one(FCvt, fb, z, 0, 0),
+                one(FMul, fa, fa, fb, 0),
+                one(FBits, t, fa, 0, 0),
+                one(Xor, x, x, t, 0),
+            ]);
+        }
+        FAddTap => {
+            // Raw bits as floats: every exponent, subnormals and NaNs
+            // included. fadd canonicalizes any NaN it produces.
+            let (fa, fb, t) = (tmp.f(), tmp.f(), tmp.r());
+            out.extend([
+                one(FFrom, fa, y, 0, 0),
+                one(FFrom, fb, z, 0, 0),
+                one(FAdd, fa, fa, fb, 0),
+                one(FBits, t, fa, 0, 0),
+                one(Sub, x, x, t, 0),
+            ]);
+        }
+        HypotTap => {
+            let (fa, fb, t) = (tmp.f(), tmp.f(), tmp.r());
+            out.extend([
+                one(FCvt, fa, y, 0, 0),
+                one(FCvt, fb, z, 0, 0),
+                one(FMul, fa, fa, fa, 0),
+                one(FMul, fb, fb, fb, 0),
+                one(FAdd, fa, fa, fb, 0),
+                one(FSqrt, fa, fa, 0, 0),
+                one(FBits, t, fa, 0, 0),
+                one(Add, x, x, t, 0),
+            ]);
+        }
+        MemChase => {
+            // Two dependent loads: latency, not bandwidth.
+            let t = tmp.r();
+            out.extend([
+                one(And, t, y, MASK, 0),
+                one(Ld, t, t, 0, 0),
+                one(And, t, t, MASK, 0),
+                one(Ld, t, t, 0, 0),
+                one(Xor, x, x, t, 0),
+            ]);
+        }
+        MemRmw => {
+            // mem[z] += y, then x ^= the new value.
+            let (t1, t2) = (tmp.r(), tmp.r());
+            out.extend([
+                one(And, t1, z, MASK, 0),
+                one(Ld, t2, t1, 0, 0),
+                one(Add, t2, t2, y, 0),
+                one(St, 0, t1, t2, 0),
+                one(Xor, x, x, t2, 0),
+            ]);
+        }
+        MemXorLoad => {
+            let t = tmp.r();
+            out.extend([
+                one(Xor, t, y, z, 0),
+                one(And, t, t, MASK, 0),
+                one(Ld, t, t, 0, 0),
+                one(Sub, x, x, t, 0),
+            ]);
+        }
+        CondNegate => {
+            // x = -x in lanes where y < z, as (x ^ m) - m with m = 0 or -1.
+            let (p, t) = (tmp.p(), tmp.r());
+            out.extend([
+                one(CmpLtu, p, y, z, 0),
+                one(PMov, t, p, 0, 0),
+                one(Xor, x, x, t, 0),
+                one(Sub, x, x, t, 0),
+            ]);
+        }
+        CondWordRotate => {
+            // WordRotate in lanes where u < v. u and v aren't rotated, so the
+            // condition survives and the step can be undone.
+            let p = tmp.p();
+            out.push(one(CmpLtu, p, u, v, 0));
+            out.push(vec![
+                Slot::new(Addi, x, y, 0, 0).when(p),
+                Slot::new(Addi, y, z, 0, 0).when(p),
+                Slot::new(Addi, z, w, 0, 0).when(p),
+                Slot::new(Addi, w, x, 0, 0).when(p),
+            ]);
+        }
+        ShaFeistel => {
+            // Hash every state word but x (zero in its place) and xor one
+            // digest word into x: SHA-256 cost, still a bijection.
+            let (t, i) = (tmp.r(), rng.below(8) as i32);
+            for (j, &r) in STATE.iter().enumerate() {
+                let r = if r == x { 0 } else { r };
+                out.push(one(St, 0, 0, r, 64 + 4 * j as i32));
+            }
+            out.extend([
+                one(Li, t, 0, 0, 64),
+                one(Sha256, 0, t, t, 0),
+                one(Ld, t, 0, 0, 64 + 4 * i),
+                one(Xor, x, x, t, 0),
+            ]);
+        }
+        FoldTap => {
+            // Fold the scratchpad mid-program, so stores before this point
+            // matter twice and the fold can't be deferred to the end.
+            let (t, i) = (tmp.r(), rng.below(8) as i32);
+            out.extend([
+                one(Li, t, 0, 0, 96),
+                one(Fold, 0, MASK, t, 0),
+                one(Ld, t, 0, 0, 96 + 4 * i),
+                one(Add, x, x, t, 0),
+            ]);
+        }
     }
 }
 

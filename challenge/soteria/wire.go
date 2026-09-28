@@ -22,7 +22,7 @@ const (
 )
 
 // blockBits is log2 of the nonces that share a program. Building a program
-// costs about 0.6 batches (2.5 attempts), so 256-nonce blocks add about 1% to
+// costs about half a batch (2 attempts), so 256-nonce blocks add about 1% to
 // an honest client, while an attacker who compiles programs has to compile
 // one every 256 nonces instead of once per challenge.
 const blockBits = 8

@@ -69,22 +69,22 @@ gadgets over the state `r1..r8` → `sha256(state ‖ fold(scratchpad))` →
 compare the first word to a threshold. The fold means every store reaches the
 digest, so an attacker's compiler can't delete stores as dead code. Before the
 gadgets run, `fill` expands `sha256(challenge ‖ nonce)` into the arena, so
-memory is different for every challenge and every nonce. There are 16 gadgets:
+memory is different for every challenge and every nonce. There are 32 gadgets:
 
 | Group | Gadgets |
 |---|---|
-| ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift` |
-| Bit-count taps | `PopcntTap`, `ClzTap` |
-| Float taps | `SqrtTap`, `DivTap` |
-| Memory | `MemLoad`, `MemScatter` |
-| Lane movement | `CondSwap`, `WordRotate` |
-| Anchor | `ShaAnchor` |
+| ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap` |
+| Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap` |
+| Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap` |
+| Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad` |
+| Lane movement | `CondSwap`, `WordRotate`, `CondNegate`, `CondWordRotate` |
+| Expensive | `ShaAnchor`, `ShaFeistel`, `FoldTap` |
 
 Every gadget except `ShaAnchor` is a bijection on the state, mostly in
 Feistel form (`x op= f(y, z, …)` with `x` not an input to `f`), so lossy ops
 can't collapse the state space. Gadgets emit sequential steps; the list
 scheduler packs them into bundles around register, predicate, float and
-memory hazards (about 2.8 slots per bundle on the default mix). Float taps
+memory hazards (about 2.7 slots per bundle on the default mix). Float taps
 xor in the result's bits (`fbits`), not its truncated value, so they carry
 full 32-bit entropy.
 
@@ -94,7 +94,7 @@ chaining (solutions can't be searched in parallel), and program blocks.
 With `block = k`, nonce `n` of each sub-challenge runs the program built from
 `block_seed(seed, sub, n >> k)` instead of one program per challenge, so an
 attacker who compiles programs pays for a compile every 2^k nonces. Building a
-default program costs about 0.6 batch attempts in the interpreter.
+default program costs about half a batch attempt in the interpreter.
 `Challenge::with_budget` picks the threshold so expected work equals a given
 number of bundle-equivalents: bundles plus the real cost of `fill`, `fold`
 and `sha256`, which take 1 fuel each but do far more work (`attempt_cost`).
