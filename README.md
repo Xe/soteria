@@ -119,6 +119,21 @@ layout is in the `ffi.rs` module docs) and calls `soteria_verify` (1 or 0) or
 results mean a malformed request. `soteria_fingerprint` returns the opcode
 numbering fingerprint to compare with the client build.
 
+## Tools (`soteria-cli`)
+
+`soteria-asm` assembles a `.sot` listing into a `.sotb` file, and
+`soteria-disasm` prints the listing back; the round trip is byte-exact. A
+`.sotb` file is the magic `SOTB`, the build's opcode fingerprint, then the
+encoded program, so a build with a different `SOTERIA_OPCODE_SEED` refuses it
+instead of decoding garbage. `--raw` reads or writes bare program bytes.
+Both run natively through cargo aliases:
+
+```sh
+cargo soteria-asm programs/hashcash.sot       # writes programs/hashcash.sotb
+cargo soteria-disasm programs/hashcash.sotb
+cargo soteria-asm programs/hashcash.sot --check
+```
+
 ## Per-build opcode numbering (`build.rs`)
 
 Set `SOTERIA_OPCODE_SEED` at build time to Fisher-Yates shuffle all 256 byte

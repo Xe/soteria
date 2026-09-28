@@ -7,3 +7,8 @@ runner = "wasmtime"
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]
+
+# Native tools; the default target above is for the VM and tests.
+[alias]
+soteria-asm = "run -q --release --target host-tuple -p soteria-cli --bin soteria-asm --"
+soteria-disasm = "run -q --release --target host-tuple -p soteria-cli --bin soteria-disasm --"

@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,300 lines across 3 crates, 38 tests passing (plus 1 ignored benchmark). Nothing is wired
+Status: working prototype, about 3,500 lines across 4 crates, 39 tests passing (plus 1 ignored benchmark). Nothing is wired
 into Anubis yet.
 
 ## Build and test
@@ -14,15 +14,18 @@ into Anubis yet.
 The workspace defaults to `wasm32-wasip1`; `.cargo/config.toml` sets the
 target, `+simd128`, and `wasmtime` as the test runner. `soteria` and
 `soteria-ffi` are `#![cfg(target_arch = "wasm32")]`, so a native build of them
-compiles to nothing. `soteria-isa` builds anywhere.
+compiles to nothing. `soteria-isa` and `soteria-cli` build anywhere; the CLI
+aliases pass `--target host-tuple` to run natively.
 
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 38 tests across the workspace, ~1 s
+cargo test --release                       # 39 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo build --release -p soteria-ffi --target wasm32-unknown-unknown # verifier for wazero
+cargo soteria-asm programs/hashcash.sot     # -> programs/hashcash.sotb (native)
+cargo soteria-disasm programs/hashcash.sotb # listing to stdout
 ```
 
 Last verified with rustc 1.98.1 and wasmtime 48.0.0. If `cargo test` reports
@@ -35,7 +38,7 @@ crate's test binary and that summary line is missing. Search the output for
 ## Layout
 
 A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
-soteria-ffi`.
+soteria-ffi`, plus `soteria-isa <- soteria-cli`.
 
 | Path | What it is |
 |---|---|
@@ -52,6 +55,8 @@ soteria-ffi`.
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
 | `crates/soteria/src/tests.rs` | VM, gadget, best-effort and assembler tests |
 | `crates/soteria-ffi/src/lib.rs` | C ABI for wazero (cdylib): request layout (module docs), `request` encoder, `soteria_*` exports, ABI tests |
+| `crates/soteria-cli/` | Native `soteria-asm` / `soteria-disasm` (clap) and the `.sotb` container (magic + opcode fingerprint + program) |
+| `programs/hashcash.sot` | Annotated hashcash source; `hashcash_from_source` checks it equals `hashcash::program(16, 1000)` |
 | `README.md` | ISA reference table and feature summaries |
 
 ## Machine model (the spec)

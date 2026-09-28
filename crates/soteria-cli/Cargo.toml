@@ -1,0 +1,8 @@
+[package]
+name = "soteria-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+soteria-isa = { path = "../soteria-isa" }

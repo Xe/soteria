@@ -633,20 +633,7 @@ mod asm_tests {
 
     #[test]
     fn hashcash_from_source() {
-        let src = r#"
-            ; sha256(challenge || nonce) with 16 leading zero bits
-                    li r12, 64 | li r14, 1000 | li r10, 15
-            loop:   st [r0+32], r15 | addi r14, r14, -1
-                    sha256 [r12], [r0]
-                    ld r1, [r12]
-                    bswap r3, r1
-                    clz r3, r3
-                    cmpltu p15, r10, r3 | cmplt p3, r0, r14
-                    addi r11, r15, 0 ?p15 | addi r15, r15, 4 | pany p7, p15
-                    bp p7, @done
-                    bp p3, @loop
-            done:   halt
-        "#;
+        let src = include_str!("../../../programs/hashcash.sot");
         assert_eq!(assemble(src).unwrap(), hashcash::program(16, 1000));
     }
 

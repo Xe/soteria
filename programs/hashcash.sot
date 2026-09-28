@@ -1,0 +1,28 @@
+; Hashcash on Soteria: find the smallest nonce such that
+; sha256(challenge[32] || nonce_le[4] || zeros[28]) starts with 16 zero bits.
+; Same program as hashcash::program(16, 1000), checked by hashcash_from_source.
+;
+; Lane L tries nonces base+L, base+L+4, base+L+8, ... and the loop exits as
+; soon as any lane hits, so the first hit in the lowest lane is the smallest.
+;
+; Registers: r1 digest word, r3 byteswapped word / clz, r10 difficulty - 1,
+;   r11 found nonce, r12 = 64 (hash block address), r14 iterations left,
+;   r15 current nonce (starts as base + lane).
+; Predicates: p3 iterations remain, p7 some lane solved, p15 solved.
+; Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block.
+
+        li r12, 64 | li r14, 1000 | li r10, 15
+
+loop:   st [r0+32], r15 | addi r14, r14, -1     ; nonce goes after the challenge
+        sha256 [r12], [r0]                      ; hash mem[0..64] into mem[64..96]
+        ld r1, [r12]
+        bswap r3, r1                            ; loads are LE, the digest is BE
+        clz r3, r3
+        cmpltu p15, r10, r3 | cmplt p3, r0, r14 ; p15 = clz >= 16, p3 = iterations remain
+        ; Latch the nonce where solved, advance every lane, reduce across lanes.
+        ; All three slots read r15 and p15 from before this bundle.
+        addi r11, r15, 0 ?p15 | addi r15, r15, 4 | pany p7, p15
+        bp p7, @done                            ; any lane solved: stop
+        bp p3, @loop
+
+done:   halt

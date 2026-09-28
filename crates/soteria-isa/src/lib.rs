@@ -197,6 +197,29 @@ pub enum Error {
     OutOfFuel,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            Error::BadLength => write!(
+                f,
+                "length is not a whole number of {BUNDLE_BYTES}-byte bundles"
+            ),
+            Error::BadOpcode(b) => write!(f, "byte {b:#04x} is not an opcode in this build"),
+            Error::BadGuard(g) => write!(f, "guard byte {g:#04x} has bits above 4 set"),
+            Error::MultipleControlOps { bundle } => {
+                write!(f, "bundle {bundle} has more than one control op")
+            }
+            Error::PcOutOfRange(pc) => write!(f, "pc {pc} is past the end of the program"),
+            Error::DivergentControl { pc } => {
+                write!(f, "lanes disagree on control flow at pc {pc}")
+            }
+            Error::OutOfFuel => write!(f, "out of fuel"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 /// A validated program: at most one control op per bundle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program(Vec<Bundle>);
