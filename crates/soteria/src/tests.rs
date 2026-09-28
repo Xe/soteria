@@ -363,13 +363,12 @@ mod gadget_tests {
         }
     }
 
-    /// `VarRot` rotates each lane by its own amount. The gadget picks x, y
-    /// and z from the seed, so find the one word that changed and check it
-    /// against rotr(x + z, y & 31) for some other two words.
-    #[test]
-    fn var_rot_matches_scalar() {
+    /// Run gadget `g` alone on random state. It picks x, y and z from the
+    /// seed, so find the one word that changed and check it against
+    /// `f(x, y, z)` for some other two words.
+    fn tap_matches(g: gadgets::Gadget, f: impl Fn(u32, u32, u32) -> u32) {
         for seed in 0..16 {
-            let prog = gadgets::solo(gadgets::Gadget::VarRot, seed);
+            let prog = gadgets::solo(g, seed);
             let mut rng = crate::puzzle::SplitMix(seed ^ 0x5EED);
             let mut vm = Vm::new(&[], 0, 100);
             let before: [[u32; 4]; 16] = core::array::from_fn(|i| {
@@ -380,18 +379,37 @@ mod gadget_tests {
             vm.run(&prog).unwrap();
             let after = vm.r.map(lanes);
             let changed: Vec<usize> = (1..=8).filter(|&i| after[i] != before[i]).collect();
-            assert_eq!(changed.len(), 1, "seed {seed}: one state word changes");
+            assert_eq!(
+                changed.len(),
+                1,
+                "{g:?} seed {seed}: one state word changes"
+            );
             let x = changed[0];
             let matches = (1..=8).filter(|&y| y != x).any(|y| {
                 (1..=8).filter(|&z| z != x && z != y).any(|z| {
-                    (0..4).all(|l| {
-                        let sum = before[x][l].wrapping_add(before[z][l]);
-                        after[x][l] == sum.rotate_right(before[y][l] & 31)
-                    })
+                    (0..4).all(|l| after[x][l] == f(before[x][l], before[y][l], before[z][l]))
                 })
             });
-            assert!(matches, "seed {seed}: r{x} is not rotr(x + z, y & 31)");
+            assert!(
+                matches,
+                "{g:?} seed {seed}: r{x} doesn't match the scalar reference"
+            );
         }
+    }
+
+    /// `VarRot` rotates each lane by its own amount.
+    #[test]
+    fn var_rot_matches_scalar() {
+        tap_matches(gadgets::Gadget::VarRot, |x, y, z| {
+            x.wrapping_add(z).rotate_right(y & 31)
+        });
+    }
+
+    #[test]
+    fn smul_hi_tap_matches_scalar() {
+        tap_matches(gadgets::Gadget::SMulHiTap, |x, y, z| {
+            x ^ ((y as i32 as i64 * z as i32 as i64) >> 32) as u32
+        });
     }
 
     #[test]

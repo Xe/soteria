@@ -69,12 +69,12 @@ gadgets over the state `r1..r8` → `sha256(state ‖ fold(scratchpad))` →
 compare the first word to a threshold. The fold means every store reaches the
 digest, so an attacker's compiler can't delete stores as dead code. Before the
 gadgets run, `fill` expands `sha256(challenge ‖ nonce)` into the arena, so
-memory is different for every challenge and every nonce. There are 35 gadgets:
+memory is different for every challenge and every nonce. There are 36 gadgets:
 
 | Group | Gadgets |
 |---|---|
 | ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap`, `VarRot`, `CondRepeat` |
-| Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap` |
+| Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap`, `SMulHiTap` |
 | Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap` |
 | Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad`, `MemWalk` |
 | Lane movement | `CondSwap`, `WordRotate`, `CondNegate`, `CondWordRotate` |

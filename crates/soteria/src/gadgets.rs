@@ -84,9 +84,11 @@ pub enum Gadget {
     VarRot,
     // Control: a data-dependent loop
     CondRepeat,
+    // Signed multiply-high tap
+    SMulHiTap,
 }
 
-pub const ALL: [Gadget; 35] = {
+pub const ALL: [Gadget; 36] = {
     use Gadget::*;
     [
         AddRot,
@@ -124,6 +126,7 @@ pub const ALL: [Gadget; 35] = {
         MemWalk,
         VarRot,
         CondRepeat,
+        SMulHiTap,
     ]
 };
 
@@ -163,7 +166,10 @@ impl Mix {
                     SigmaTap, MulAddTap, VarRot, CondRepeat,
                 ],
             ),
-            (self.taps, &[PopcntTap, ClzTap, MulHiTap, CmpMaskTap]),
+            (
+                self.taps,
+                &[PopcntTap, ClzTap, MulHiTap, CmpMaskTap, SMulHiTap],
+            ),
             (self.float, &[SqrtTap, DivTap, FMulTap, FAddTap, HypotTap]),
             (
                 self.memory,
@@ -565,6 +571,23 @@ pub(crate) fn emit(
         MulHiTap => {
             let t = tmp.r();
             out.extend([one(Mulhu, t, y, z, 0), one(Xor, x, x, t, 0)]);
+        }
+        SMulHiTap => {
+            // Signed high half from the unsigned one: subtract z where y is
+            // negative and y where z is negative.
+            let (t, m, p) = (tmp.r(), tmp.r(), tmp.p());
+            out.extend([
+                one(Mulhu, t, y, z, 0),
+                one(CmpLt, p, y, 0, 0),
+                one(PMov, m, p, 0, 0),
+                one(And, m, m, z, 0),
+                one(Sub, t, t, m, 0),
+                one(CmpLt, p, z, 0, 0),
+                one(PMov, m, p, 0, 0),
+                one(And, m, m, y, 0),
+                one(Sub, t, t, m, 0),
+                one(Xor, x, x, t, 0),
+            ]);
         }
         CmpMaskTap => {
             // x += y < z ? w : 0
