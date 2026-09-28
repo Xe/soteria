@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 58 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 59 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 58 tests across the workspace, ~1 s
+cargo test --release                       # 59 tests across the workspace, ~1.5 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo test --release bench_solve -- --ignored --nocapture # solve time per Anubis difficulty, 4..=12
@@ -58,6 +58,7 @@ A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
 | `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
 | `crates/soteria/src/tests.rs` | VM, gadget, best-effort and assembler tests |
+| `crates/soteria/src/reference.rs` | Test-only copy of the interpreter from before roadmap item 9; `interpreter_matches_reference` steps it alongside `Vm::step` |
 | `crates/soteria/src/wire.rs` | Request layout shared by both modules: `parse`, `request` encoder, `ERR_*`, caps, `alloc`/`take` |
 | `crates/soteria-client/src/lib.rs` | Browser module (cdylib): stepped solver, `soteria_solve`/`search`/`step`/`nonces`/`estimate` |
 | `crates/soteria-server/src/lib.rs` | Server module (cdylib) for wazero: `soteria_verify`/`verify_best` |
@@ -217,7 +218,7 @@ chain is short; raise `mix.float` to lengthen it.
    | 1 MiB | 24730 | 3.5k | 288 |
 
    Past 64 KiB, `fill` and `fold` (sequential, bandwidth-bound) are most of the cost, not the `MemWalk` hops. Anubis difficulty counts attempts, so a bigger default arena means lowering difficulty by about log2 of the cost ratio (3.5 bits for 256 KiB) to keep solve times. Whether that narrows the phone/desktop gap needs measuring on phones.
-9. **Interpreter performance:** pre-decode, fixed-size pending writes, no allocation in the hot path. Protect it with a bundle-by-bundle differential test against the current `Vm`.
+9. **Interpreter performance:** pre-decode, fixed-size pending writes, no allocation in the hot path. `interpreter_matches_reference` protects it: 300 random programs over every opcode (random guards, immediates, NaN floats, branches) and 8 challenge programs run through both `Vm::step` and `reference::step`, comparing registers, pc, fuel, halt, dirty and errors after every bundle and memory at the end.
 10. **Later:** a lane visualizer for the Anubis challenge page, the WIT `compiler`/`verifier` interfaces (`jco transpile` for browsers), and the Techaro datasheet.
 
 ## Decisions already made (don't relitigate without a reason)

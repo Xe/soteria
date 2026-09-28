@@ -454,4 +454,6 @@ pub fn verify(prog: &Program, image: &[u8], nonce: u32, fuel: u64) -> bool {
 }
 
 #[cfg(test)]
+mod reference;
+#[cfg(test)]
 mod tests;

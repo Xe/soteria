@@ -55,6 +55,136 @@ fn bswap_and_popcnt_match_scalar() {
     assert_eq!(lanes(vm.r[3]), v.map(u32::count_ones));
 }
 
+/// A random program over every opcode: random registers, guards and
+/// immediates, at most one control op per bundle, branch targets in range.
+fn random_program(rng: &mut puzzle::SplitMix, len: usize) -> Program {
+    let bundles = (0..len)
+        .map(|_| {
+            let mut control = false;
+            core::array::from_fn(|_| {
+                let op = loop {
+                    let op = Op::ALL[rng.below(Op::ALL.len() as u64) as usize];
+                    let is_control = matches!(op, Op::Halt | Op::Subleq | Op::Bp);
+                    // Control ops are rare, or most runs would diverge at once.
+                    if is_control && (control || rng.below(8) != 0) {
+                        continue;
+                    }
+                    control |= is_control;
+                    break op;
+                };
+                let imm = match op {
+                    Op::Subleq | Op::Bp => rng.below(len as u64) as i32,
+                    _ => match rng.below(3) {
+                        0 => rng.below(32) as i32,
+                        1 => rng.below(1 << 12) as i32,
+                        _ => rng.next() as i32,
+                    },
+                };
+                let r = |rng: &mut puzzle::SplitMix| rng.below(16) as u8;
+                let mut s = Slot::new(op, r(rng), r(rng), r(rng), imm);
+                s.guard = match rng.below(4) {
+                    0 => rng.below(32) as u8,
+                    _ => 0,
+                };
+                s
+            })
+        })
+        .collect();
+    Program::new(bundles).unwrap()
+}
+
+/// Step `Vm::step` and the frozen reference interpreter side by side and
+/// require identical registers after every bundle. Memory is compared at the
+/// end, below the dirty mark or, with `full`, entirely (a write above the
+/// mark that didn't raise it would only show there); loads carry any earlier
+/// difference into the registers.
+fn step_both(prog: &Program, a: &mut Vm, b: &mut Vm, full: bool, what: &str) {
+    let regs = |vm: &Vm| {
+        (
+            vm.r.map(lanes),
+            vm.f.map(lanes),
+            vm.p.map(lanes),
+            vm.pc,
+            vm.fuel,
+            vm.halted,
+            vm.dirty,
+        )
+    };
+    while !a.halted {
+        let (ra, rb) = (a.step(prog), reference::step(b, prog));
+        assert_eq!(ra, rb, "{what}: result at pc {}", b.pc);
+        assert_eq!(regs(a), regs(b), "{what}: registers");
+        if ra.is_err() {
+            break;
+        }
+    }
+    let end = if full { MEM_SIZE } else { a.dirty.max(b.dirty) };
+    for l in 0..LANES {
+        let o = l * MEM_SIZE;
+        assert!(
+            a.mem[o..o + end] == b.mem[o..o + end],
+            "{what}: final lane {l} memory"
+        );
+    }
+}
+
+#[test]
+fn interpreter_matches_reference() {
+    let mut rng = puzzle::SplitMix(0x1D1F);
+    // Reused through `reset`: zeroing two fresh 4 MiB machines per program
+    // would dominate the test.
+    let (mut a, mut b) = (Vm::new(&[], 0, 0), Vm::new(&[], 0, 0));
+    for n in 0..300 {
+        let len = 1 + rng.below(24) as usize;
+        let prog = random_program(&mut rng, len);
+        let image: Vec<u8> = (0..rng.below(4096)).map(|_| rng.next() as u8).collect();
+        let base = (rng.next() as u32) & !3;
+        for vm in [&mut a, &mut b] {
+            vm.reset(&image, base, 64);
+            let mut r = puzzle::SplitMix(n);
+            for i in 1..16 {
+                vm.r[i] = from_lanes(core::array::from_fn(|_| r.next() as u32));
+            }
+            // Raw bits, NaNs and all: float writes must still agree.
+            for i in 0..4 {
+                vm.f[i] = from_lanes(core::array::from_fn(|_| r.next() as u32));
+            }
+            // Predicates are always all-ones or all-zero per lane.
+            for i in 1..16 {
+                vm.p[i] = from_lanes(core::array::from_fn(
+                    |_| {
+                        if r.below(2) == 0 {
+                            0
+                        } else {
+                            !0
+                        }
+                    },
+                ));
+            }
+        }
+        step_both(
+            &prog,
+            &mut a,
+            &mut b,
+            n % 16 == 0,
+            &format!("random program {n}"),
+        );
+    }
+    for seed in 0..8 {
+        let c = gadgets::Challenge::new(seed, gadgets::Params::default());
+        let sub = [seed as u8; 32];
+        let (mut a, mut b) = (Vm::new(&sub, 8, c.fuel()), Vm::new(&sub, 8, c.fuel()));
+        step_both(
+            &c.program,
+            &mut a,
+            &mut b,
+            true,
+            &format!("challenge {seed}"),
+        );
+        assert!(a.halted, "challenge {seed} runs to halt");
+    }
+}
+
 #[test]
 fn mulhu_and_pmov_match_scalar() {
     let a = [0u32, 0xFFFF_FFFF, 0x8000_0001, 0x1234_5678];
