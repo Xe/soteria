@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/TecharoHQ/anubis v1.28.0-pre2
 	github.com/a-h/templ v0.3.1020
+	github.com/facebookgo/flagenv v0.0.0-20160425205200-fcd59fca7456
 	github.com/tetratelabs/wazero v1.12.1-0.20260714071631-236c2458ed22
 )
 
@@ -47,6 +48,7 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/google/cel-go v0.28.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/goreleaser/fileglob v1.4.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 // indirect
