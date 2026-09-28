@@ -412,6 +412,19 @@ mod gadget_tests {
         });
     }
 
+    /// One Newton step of the fast inverse square root on `y >> 1` as float
+    /// bits, in the VM's association order.
+    #[test]
+    fn rsqrt_tap_matches_scalar() {
+        tap_matches(gadgets::Gadget::RsqrtTap, |x, y, _| {
+            let a = y >> 1;
+            let half = f32::from_bits(a) * 0.5;
+            let g = f32::from_bits(0x5F37_59DF - (a >> 1));
+            let r = g * (1.5 - (g * g) * half);
+            x ^ if r.is_nan() { 0x7FC0_0000 } else { r.to_bits() }
+        });
+    }
+
     #[test]
     fn megabyte_scratchpad_solves_and_verifies() {
         let p = Params {

@@ -86,9 +86,11 @@ pub enum Gadget {
     CondRepeat,
     // Signed multiply-high tap
     SMulHiTap,
+    // Float: fast inverse square root
+    RsqrtTap,
 }
 
-pub const ALL: [Gadget; 36] = {
+pub const ALL: [Gadget; 37] = {
     use Gadget::*;
     [
         AddRot,
@@ -127,6 +129,7 @@ pub const ALL: [Gadget; 36] = {
         VarRot,
         CondRepeat,
         SMulHiTap,
+        RsqrtTap,
     ]
 };
 
@@ -170,7 +173,10 @@ impl Mix {
                 self.taps,
                 &[PopcntTap, ClzTap, MulHiTap, CmpMaskTap, SMulHiTap],
             ),
-            (self.float, &[SqrtTap, DivTap, FMulTap, FAddTap, HypotTap]),
+            (
+                self.float,
+                &[SqrtTap, DivTap, FMulTap, FAddTap, HypotTap, RsqrtTap],
+            ),
             (
                 self.memory,
                 &[MemLoad, MemScatter, MemChase, MemRmw, MemXorLoad, MemWalk],
@@ -619,6 +625,32 @@ pub(crate) fn emit(
                 one(FAdd, fa, fa, fb, 0),
                 one(FBits, t, fa, 0, 0),
                 one(Sub, x, x, t, 0),
+            ]);
+        }
+        RsqrtTap => {
+            // Fast inverse square root of y >> 1 as float bits (so never
+            // negative): the integer guess, then one Newton step,
+            // g * (1.5 - (g * g) * half), in a fixed order with no FMA.
+            let (a, g, c) = (tmp.r(), tmp.r(), tmp.r());
+            let (fh, fg, fc, fw) = (tmp.f(), tmp.f(), tmp.f(), tmp.f());
+            out.extend([
+                one(Shr, a, y, 0, 1),
+                one(Shr, g, a, 0, 1),
+                one(Li, c, 0, 0, 0x5F37_59DF),
+                one(Sub, g, c, g, 0),
+                one(FFrom, fh, a, 0, 0),
+                one(FFrom, fg, g, 0, 0),
+                one(Li, c, 0, 0, 0x3F00_0000),
+                one(FFrom, fc, c, 0, 0),
+                one(FMul, fh, fh, fc, 0),
+                one(Li, c, 0, 0, 0x3FC0_0000),
+                one(FFrom, fc, c, 0, 0),
+                one(FMul, fw, fg, fg, 0),
+                one(FMul, fw, fw, fh, 0),
+                one(FSub, fw, fc, fw, 0),
+                one(FMul, fw, fg, fw, 0),
+                one(FBits, a, fw, 0, 0),
+                one(Xor, x, x, a, 0),
             ]);
         }
         HypotTap => {

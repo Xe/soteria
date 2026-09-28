@@ -69,13 +69,13 @@ gadgets over the state `r1..r8` → `sha256(state ‖ fold(scratchpad))` →
 compare the first word to a threshold. The fold means every store reaches the
 digest, so an attacker's compiler can't delete stores as dead code. Before the
 gadgets run, `fill` expands `sha256(challenge ‖ nonce)` into the arena, so
-memory is different for every challenge and every nonce. There are 36 gadgets:
+memory is different for every challenge and every nonce. There are 37 gadgets:
 
 | Group | Gadgets |
 |---|---|
 | ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap`, `VarRot`, `CondRepeat` |
 | Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap`, `SMulHiTap` |
-| Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap` |
+| Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap`, `RsqrtTap` |
 | Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad`, `MemWalk` |
 | Lane movement | `CondSwap`, `WordRotate`, `CondNegate`, `CondWordRotate` |
 | Expensive | `ShaAnchor`, `ShaFeistel`, `FoldTap` |
@@ -92,7 +92,9 @@ from the previous load, so it costs memory latency rather than throughput.
 rotates, since WASM SIMD only shifts by a scalar. `CondRepeat` is the only
 loop: it runs two gadgets `1 + (3 bits of z)` times per lane, and the batch
 keeps going while `pany` says some lane wants more, so every lane pays for
-the largest count (about 6.9 iterations on average).
+the largest count (about 6.9 iterations on average). `RsqrtTap` is the
+fast inverse square root as a tap: the `0x5F3759DF` integer guess, then one
+Newton step in a fixed float order.
 
 Difficulty axes (`Params`): gadget count, category mix, scratchpad size,
 threshold (smooth success probability), number of solutions (less variance),
