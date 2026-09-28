@@ -24,7 +24,7 @@ fn hazards(s: &Slot) -> (Vec<usize>, Vec<usize>) {
     let (mut r, w) = match s.op {
         Li => (vec![], vec![R + d]),
         Addi | Shl | Shr | Rotr | Clz | Bswap | Popcnt => (vec![R + a], vec![R + d]),
-        Add | Sub | Mul | Xor | And | Or => (vec![R + a, R + b], vec![R + d]),
+        Add | Sub | Mul | Mulhu | Xor | And | Or => (vec![R + a, R + b], vec![R + d]),
         Ld => (vec![R + a, MEM], vec![R + d]),
         St => (vec![R + a, R + b], vec![MEM]),
         Sha256 | Fold | Fill => (vec![R + a, R + b, MEM], vec![MEM]),
@@ -37,6 +37,7 @@ fn hazards(s: &Slot) -> (Vec<usize>, Vec<usize>) {
         FLt => (vec![F + (a & 3), F + (b & 3)], vec![P + d]),
         FTrunc | FBits => (vec![F + (a & 3)], vec![R + d]),
         FFrom => (vec![R + a], vec![F + (d & 3)]),
+        PMov => (vec![P + a], vec![R + d]),
         Nop => (vec![], vec![]),
         Halt | Subleq | Bp => panic!("control ops are not schedulable"),
     };

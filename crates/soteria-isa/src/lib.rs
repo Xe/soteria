@@ -86,6 +86,11 @@ ops! {
     /// mem[128 .. (ra & 0xFFFF) + 1] = expand(mem[rb & 0xFFE0 ..][..32]).
     /// Fills the arena from a per-attempt key, so memory differs per nonce.
     Fill,
+    /// rd = (ra as u64 * rb as u64) >> 32, the high half of an unsigned
+    /// multiply (two `u64x2.extmul` and a shuffle).
+    Mulhu,
+    /// rd = pa ? -1 : 0
+    PMov,
 }
 
 /// This build's opcode numbering (see build.rs).

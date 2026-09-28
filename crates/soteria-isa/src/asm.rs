@@ -66,7 +66,7 @@ fn signature(op: Op) -> &'static [Arg] {
         Nop | Halt => &[],
         Li => &[R(D), Imm],
         Addi | Shl | Shr | Rotr => &[R(D), R(A), Imm],
-        Add | Sub | Mul | Xor | And | Or => &[R(D), R(A), R(B)],
+        Add | Sub | Mul | Mulhu | Xor | And | Or => &[R(D), R(A), R(B)],
         Clz | Bswap | Popcnt => &[R(D), R(A)],
         Ld => &[R(D), Mem(A)],
         St => &[Mem(A), R(B)],
@@ -81,6 +81,7 @@ fn signature(op: Op) -> &'static [Arg] {
         FSqrt => &[F(D), F(A)],
         FLt => &[P(D), F(A), F(B)],
         FTrunc | FBits => &[R(D), F(A)],
+        PMov => &[R(D), P(A)],
         Subleq => &[R(A), R(B), Target],
         Bp => &[P(A), Target],
     }

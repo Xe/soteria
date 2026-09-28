@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 46 tests passing (plus 1 ignored benchmark). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 47 tests passing (plus 1 ignored benchmark). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 46 tests across the workspace, ~1 s
+cargo test --release                       # 47 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo build --release -p soteria-client -p soteria-server --target wasm32-unknown-unknown # browser and wazero modules
@@ -86,7 +86,7 @@ with the guard must be all-true or all-false across the 4 lanes, otherwise
 `DivergentControl`. At most one control op per bundle, enforced by
 `Program::new`.
 
-41 opcodes. The README table is the reference; edge cases that matter:
+43 opcodes. The README table is the reference; edge cases that matter:
 
 - Shifts and `rotr` use `imm & 31`. There are no per-lane shift counts because WASM SIMD shifts take a scalar amount.
 - `ld`/`st` mask the address with `& 0xFFFC`. `sha256` masks its source with `& 0xFFC0` (64 bytes) and its destination with `& 0xFFE0` (32 bytes).
@@ -170,7 +170,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 0.9 ms per verify at difficulty 4 (M-series). No `sync.Pool` yet. Anubis `difficulty` d means 16^d expected attempts (4 chained solutions, `threshold = 2^(34-4d)`, 256-nonce program blocks), max 8. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
 6. ~~**Program blocks from `nonce >> k`.**~~ Done: `Params::block`, `block_seed(seed, sub, nonce >> k)`, `Challenge::program_for`, tested by `blocks_get_their_own_programs` plus block variants of `scheduler_matches_sequential`, `solver_steps_match_solve` and `solve_verify_chained_and_not`. A default program builds in about 16 us, 0.62 batch attempts (`calibrate_memory_cost` prints it). The Anubis method uses k = 8 (about 1% client overhead); verify went from about 0.9 to 1.1 ms since the server builds one program per solution. Item 5's compiled `search(base, batches)` export should work per block.
-7. **Proposed ops, not yet added:** `mulhu` (high 32 bits of a 32×32 multiply) and `pmov` (predicate → -1/0 int). Then upgrade `SqrtTap`/`DivTap`/`ClzTap` to use `fbits` for full-entropy taps.
+7. ~~**`mulhu`, `pmov`, full-entropy taps.**~~ Done: `mulhu` (high half of an unsigned 32×32 multiply) and `pmov` (predicate → -1/0), tested by `mulhu_and_pmov_match_scalar`. `SqrtTap` (on `y >> 1`, so never NaN) and `DivTap` xor in `fbits` of the result. `ClzTap` uses `mulhu(clz + imm, y)` instead, since `fbits` of a 0..32 count is still 33 values.
 8. **Latency-bound pointer-chase gadget** plus a larger arena (256 KiB–1 MiB per lane) to narrow the phone/desktop gap. This means raising `MEM_SIZE` and address masks from 16 bits.
 9. **Interpreter performance:** pre-decode, fixed-size pending writes, no allocation in the hot path. Protect it with a bundle-by-bundle differential test against the current `Vm`.
 10. **Later:** a lane visualizer for the Anubis challenge page, the WIT `compiler`/`verifier` interfaces (`jco transpile` for browsers), and the Techaro datasheet.

@@ -330,6 +330,15 @@ impl Vm {
                 Popcnt => Write::R(d, popcnt32x4(ra)),
                 FBits => Write::R(d, fa),
                 FFrom => Write::F(d & 3, ra),
+                Mulhu => Write::R(
+                    d,
+                    i32x4_shuffle::<1, 3, 5, 7>(
+                        u64x2_extmul_low_u32x4(ra, rb),
+                        u64x2_extmul_high_u32x4(ra, rb),
+                    ),
+                ),
+                // Predicates are always all-ones or all-zero per lane.
+                PMov => Write::R(d, pa),
                 Fold => Write::Sha(rb, self.fold(ra)),
                 Fill => {
                     let (m, k) = (lanes(ra), lanes(rb));

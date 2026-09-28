@@ -256,20 +256,26 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
             ]);
         }
         ClzTap => {
+            // The count has 33 values, so offset it and take the high half
+            // of a product with y: a full 32-bit tap.
             let t = tmp.r();
             out.extend([
                 one(And, t, y, z, 0),
                 one(Clz, t, t, 0, 0),
-                one(Mul, t, t, y, 0),
+                one(Addi, t, t, 0, imm),
+                one(Mulhu, t, t, y, 0),
                 one(Add, x, x, t, 0),
             ]);
         }
         SqrtTap => {
+            // Halve y so the root is never NaN, and tap the float's bits
+            // rather than its truncated value.
             let (f, t) = (tmp.f(), tmp.r());
             out.extend([
-                one(FCvt, f, y, 0, 0),
+                one(Shr, t, y, 0, 1),
+                one(FCvt, f, t, 0, 0),
                 one(FSqrt, f, f, 0, 0),
-                one(FTrunc, t, f, 0, 0),
+                one(FBits, t, f, 0, 0),
                 one(Xor, x, x, t, 0),
             ]);
         }
@@ -279,7 +285,7 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
                 one(FCvt, fa, y, 0, 0),
                 one(FCvt, fb, z, 0, 0),
                 one(FDiv, fa, fa, fb, 0),
-                one(FTrunc, t, fa, 0, 0),
+                one(FBits, t, fa, 0, 0),
                 one(Add, x, x, t, 0),
             ]);
         }

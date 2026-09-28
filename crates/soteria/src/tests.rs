@@ -56,6 +56,33 @@ fn bswap_and_popcnt_match_scalar() {
 }
 
 #[test]
+fn mulhu_and_pmov_match_scalar() {
+    let a = [0u32, 0xFFFF_FFFF, 0x8000_0001, 0x1234_5678];
+    let b = [0xFFFF_FFFFu32, 0xFFFF_FFFF, 3, 0x9ABC_DEF0];
+    let prog = Program::new(vec![
+        bundle(&[
+            Slot::new(Op::Mulhu, 1, 2, 3, 0),
+            Slot::new(Op::CmpLtu, 4, 2, 3, 0),
+        ]),
+        bundle(&[
+            Slot::new(Op::PMov, 5, 4, 0, 0),
+            Slot::new(Op::PMov, 6, 0, 0, 0),
+        ]),
+        bundle(&[Slot::new(Op::Halt, 0, 0, 0, 0)]),
+    ])
+    .unwrap();
+    let mut vm = Vm::new(&[], 0, 10);
+    vm.r[2] = from_lanes(a);
+    vm.r[3] = from_lanes(b);
+    vm.run(&prog).unwrap();
+    let hi: [u32; 4] = core::array::from_fn(|l| ((a[l] as u64 * b[l] as u64) >> 32) as u32);
+    assert_eq!(lanes(vm.r[1]), hi);
+    let lt: [u32; 4] = core::array::from_fn(|l| if a[l] < b[l] { !0 } else { 0 });
+    assert_eq!(lanes(vm.r[5]), lt);
+    assert_eq!(lanes(vm.r[6]), [!0; 4], "p0 is always true");
+}
+
+#[test]
 fn bundle_reads_before_writes() {
     // swap r1 and r2 in one bundle
     let prog = Program::new(vec![

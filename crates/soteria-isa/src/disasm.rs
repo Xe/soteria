@@ -24,7 +24,7 @@ impl fmt::Display for Slot {
             Nop | Halt => write!(f, "{name}")?,
             Li => write!(f, "li r{d}, {i}")?,
             Addi => write!(f, "addi r{d}, r{a}, {i}")?,
-            Add | Sub | Mul | Xor | And | Or => write!(f, "{name} r{d}, r{a}, r{b}")?,
+            Add | Sub | Mul | Mulhu | Xor | And | Or => write!(f, "{name} r{d}, r{a}, r{b}")?,
             Shl | Shr | Rotr => write!(f, "{name} r{d}, r{a}, {}", self.imm & 31)?,
             Clz | Bswap | Popcnt => write!(f, "{name} r{d}, r{a}")?,
             Ld => write!(f, "ld r{d}, [r{a}+{i}]")?,
@@ -41,6 +41,7 @@ impl fmt::Display for Slot {
             FLt => write!(f, "flt p{d}, f{}, f{}", a & 3, b & 3)?,
             FTrunc | FBits => write!(f, "{name} r{d}, f{}", a & 3)?,
             FFrom => write!(f, "ffrom f{}, r{a}", d & 3)?,
+            PMov => write!(f, "pmov r{d}, p{a}")?,
             Subleq => write!(f, "subleq r{a}, r{b}, @{i}")?,
             Bp => write!(f, "bp p{a}, @{i}")?,
         }

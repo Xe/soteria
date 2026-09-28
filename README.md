@@ -30,6 +30,7 @@ All slots read pre-bundle state, then writes commit in slot order. That means
 |---|---|
 | `li d, imm` / `addi d, a, imm` | `rd = imm` / `rd = ra + imm` |
 | `add sub mul xor and or d, a, b` | `rd = ra OP rb` |
+| `mulhu d, a, b` | high 32 bits of the unsigned 64-bit product (`u64x2.extmul` + shuffle) |
 | `shl shr rotr d, a, imm` | shift by immediate (WASM SIMD has no per-lane shifts) |
 | `clz d, a` | count leading zeros (via the f32 exponent trick) |
 | `bswap d, a` | reverse byte order (one `i8x16.swizzle`) |
@@ -40,6 +41,7 @@ All slots read pre-bundle state, then writes commit in slot order. That means
 | `fold a, b` | `mem[rb..+32] = fold(mem[0..(ra & 0xFFFF)+1])`, ordered ARX-multiply fold of the scratchpad |
 | `cmpeq cmplt cmpltu pd, a, b` | integer compares into predicates |
 | `pand por pxor pd, pa, pb` / `pnot pd, pa` | predicate logic |
+| `pmov d, pa` | `rd = pa ? -1 : 0` |
 | `fcvt fd, a` / `ftrunc d, fa` | int to float / saturating float to int |
 | `fbits d, fa` / `ffrom fd, a` | bitcast float to int / int to float |
 | `fadd fsub fmul fdiv fd, fa, fb` / `fsqrt fd, fa` | float math |
@@ -82,7 +84,9 @@ Every gadget except `ShaAnchor` is a bijection on the state, mostly in
 Feistel form (`x op= f(y, z, …)` with `x` not an input to `f`), so lossy ops
 can't collapse the state space. Gadgets emit sequential steps; the list
 scheduler packs them into bundles around register, predicate, float and
-memory hazards (about 2.8 slots per bundle on the default mix).
+memory hazards (about 2.8 slots per bundle on the default mix). Float taps
+xor in the result's bits (`fbits`), not its truncated value, so they carry
+full 32-bit entropy.
 
 Difficulty axes (`Params`): gadget count, category mix, scratchpad size,
 threshold (smooth success probability), number of solutions (less variance),
