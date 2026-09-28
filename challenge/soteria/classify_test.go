@@ -16,7 +16,12 @@ import (
 	"github.com/TecharoHQ/anubis/lib/challenge"
 	"github.com/TecharoHQ/anubis/lib/store"
 	"github.com/TecharoHQ/anubis/lib/store/memory"
+	mrc "github.com/TecharoHQ/mobile-request-classifier"
 )
+
+func mrcLikelihood(phone bool) mrc.RequestLikelihood {
+	return mrc.RequestLikelihood{IsPhone: phone}
+}
 
 const (
 	iPhoneUA  = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1"
@@ -249,3 +254,112 @@ func BenchmarkClassify(b *testing.B) {
 	}
 }
 
+// TestClassifyCacheMatchesClassifier: a cached answer is the classifier's
+// answer, both on the miss and on the hit.
+func TestClassifyCacheMatchesClassifier(t *testing.T) {
+	t.Parallel()
+
+	i := setup(t)
+	for _, headers := range []map[string]string{
+		{"User-Agent": iPhoneUA},
+		{"User-Agent": desktopUA},
+		{"User-Agent": botUA},
+		{"User-Agent": androidUA, "Sec-CH-UA": `"Chromium";v="140"`, "Sec-CH-UA-Mobile": "?1", "Sec-CH-UA-Platform": `"Android"`},
+		{"User-Agent": androidUA, "Sec-CH-UA": `"Chromium";v="140"`, "Sec-CH-UA-Mobile": "?0", "Sec-CH-UA-Platform": `"Android"`},
+		{"User-Agent": desktopUA, "X-Http-Protocol": "HTTP/1.1"},
+		{},
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		want, err := i.classifier.Classify(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for try := range 2 {
+			got, err := i.classify(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != *want {
+				t.Errorf("%v try %d: got %+v, want %+v", headers, try, got, *want)
+			}
+		}
+	}
+}
+
+func TestClassifyKey(t *testing.T) {
+	t.Parallel()
+
+	key := func(method, target string, headers ...[2]string) [32]byte {
+		req := httptest.NewRequest(method, target, nil)
+		for _, h := range headers {
+			req.Header.Add(h[0], h[1])
+		}
+		return classifyKey(req)
+	}
+	ua := [2]string{"User-Agent", iPhoneUA}
+
+	if key("GET", "/a?x=1", ua) != key("POST", "/b?y=2", ua) {
+		t.Error("method, path and query changed the key; the classifier doesn't read them")
+	}
+	for _, tt := range []struct {
+		name string
+		a, b [][2]string
+	}{
+		{name: "user agent", a: [][2]string{ua}, b: [][2]string{{"User-Agent", desktopUA}}},
+		{name: "mobile hint", a: [][2]string{ua, {"Sec-Ch-Ua-Mobile", "?1"}}, b: [][2]string{ua, {"Sec-Ch-Ua-Mobile", "?0"}}},
+		{name: "hint present or not", a: [][2]string{ua}, b: [][2]string{ua, {"Sec-Ch-Ua-Bitness", "64"}}},
+		{name: "protocol", a: [][2]string{ua, {"X-Http-Protocol", "HTTP/1.1"}}, b: [][2]string{ua, {"X-Http-Protocol", "HTTP/2.0"}}},
+		{name: "value boundaries", a: [][2]string{{"Sec-Ch-Ua", "ab"}, {"Sec-Ch-Ua", "c"}}, b: [][2]string{{"Sec-Ch-Ua", "a"}, {"Sec-Ch-Ua", "bc"}}},
+		{name: "header boundaries", a: [][2]string{{"Sec-Ch-Ua-Arch", "x"}}, b: [][2]string{{"Sec-Ch-Ua-Platform", "x"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if key("GET", "/", tt.a...) == key("GET", "/", tt.b...) {
+				t.Error("different classifier inputs gave the same key")
+			}
+		})
+	}
+}
+
+// TestClassifyCacheBounded: memory stays under two generations, and an entry
+// that keeps being used survives rotations.
+func TestClassifyCacheBounded(t *testing.T) {
+	t.Parallel()
+
+	var c classifyCache
+	k := func(n int) [32]byte { return sha256.Sum256(fmt.Append(nil, n)) }
+	hot := k(-1)
+	c.put(hot, mrcLikelihood(true))
+
+	for n := range 5 * classifyCacheSize {
+		c.put(k(n), mrcLikelihood(false))
+		if n%(classifyCacheSize/2) == 0 {
+			if _, ok := c.get(hot); !ok {
+				t.Fatalf("hot entry evicted after %d puts", n)
+			}
+		}
+	}
+	if got := len(c.cur) + len(c.prev); got > 2*classifyCacheSize {
+		t.Errorf("cache holds %d entries, want at most %d", got, 2*classifyCacheSize)
+	}
+	if _, ok := c.get(k(0)); ok {
+		t.Error("oldest entry should have been evicted")
+	}
+	if v, ok := c.get(k(5*classifyCacheSize - 1)); !ok || v.IsPhone {
+		t.Errorf("newest entry = %+v, %v", v, ok)
+	}
+}
+
+func BenchmarkClassifyCached(b *testing.B) {
+	i := setup(b)
+	req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/", nil)
+	req.Header.Set("User-Agent", iPhoneUA)
+
+	for b.Loop() {
+		if _, err := i.classify(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

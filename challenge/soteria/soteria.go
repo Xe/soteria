@@ -62,6 +62,7 @@ type Impl struct {
 
 	server      *module
 	classifier  *mrc.Middleware
+	classified  classifyCache
 	fingerprint string
 	cacheBuster string
 }
