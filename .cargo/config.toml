@@ -3,7 +3,7 @@ target = "wasm32-wasip1"
 
 [target.wasm32-wasip1]
 rustflags = ["-C", "target-feature=+simd128"]
-runner = "wasmtime"
+runner = "wasmtime --dir=.::/"
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]
