@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -20,6 +21,8 @@ import (
 	"github.com/TecharoHQ/anubis/lib/config"
 	"github.com/TecharoHQ/anubis/lib/localization"
 	"github.com/TecharoHQ/anubis/lib/policy"
+	"github.com/TecharoHQ/anubis/lib/store"
+	"github.com/TecharoHQ/anubis/lib/store/memory"
 	"github.com/TecharoHQ/anubis/web"
 	"github.com/TecharoHQ/anubis/xess"
 	"github.com/facebookgo/flagenv"
@@ -47,6 +50,9 @@ const maxPending = 64
 type bench struct {
 	impl *soteria.Impl
 	rule *policy.Bot
+	// store holds the challenge method's phone classifications, as Anubis'
+	// store would.
+	store store.Interface
 
 	mu       sync.Mutex
 	pending  map[string]*chall.Challenge
@@ -80,6 +86,7 @@ func main() {
 				Difficulty: *difficulty,
 			},
 		},
+		store:   memory.New(context.Background()),
 		pending: map[string]*chall.Challenge{},
 	}
 
@@ -133,7 +140,7 @@ func (b *bench) issue(w http.ResponseWriter, r *http.Request) {
 	round := b.rounds + 1
 	b.mu.Unlock()
 
-	body, err := b.impl.Issue(w, r, slog.Default(), &chall.IssueInput{Rule: b.rule, Challenge: c})
+	body, err := b.impl.Issue(w, r, slog.Default(), &chall.IssueInput{Rule: b.rule, Challenge: c, Store: b.store})
 	if err != nil {
 		slog.Error("can't issue challenge", "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -162,7 +169,7 @@ func (b *bench) pass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := b.impl.Validate(r, slog.Default(), &chall.ValidateInput{Rule: b.rule, Challenge: c})
+	err := b.impl.Validate(r, slog.Default(), &chall.ValidateInput{Rule: b.rule, Challenge: c, Store: b.store})
 	elapsed, _ := time.ParseDuration(r.FormValue("elapsedTime") + "ms")
 
 	b.mu.Lock()

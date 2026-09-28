@@ -36,16 +36,22 @@ func setup(t testing.TB) *Impl {
 func solve(t testing.TB, randomData []byte, difficulty int) []uint32 {
 	t.Helper()
 
+	p, err := NewParams(randomData, difficulty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return solveParams(t, p)
+}
+
+// solveParams is solve for any params, such as a phone's.
+func solveParams(t testing.TB, p *Params) []uint32 {
+	t.Helper()
+
 	client, err := newModule(t.Context(), clientWasm, "soteria_solve")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close(t.Context()) //nolint:errcheck
-
-	p, err := NewParams(randomData, difficulty)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	nonces, err := client.Solve(t.Context(), p.Request(nil))
 	if err != nil {
@@ -89,6 +95,7 @@ func TestThreshold(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		difficulty int
+		bits       int // log2(solutions); 0 means solutionBits
 		want       uint32
 		err        error
 	}{
@@ -99,9 +106,15 @@ func TestThreshold(t *testing.T) {
 		{name: "max", difficulty: MaxDifficulty, want: 1 << 1},
 		{name: "negative", difficulty: -1, err: ErrDifficulty},
 		{name: "too high", difficulty: MaxDifficulty + 1, err: ErrDifficulty},
+		{name: "phone, one attempt per solution is free", difficulty: phoneSolutionBits, bits: phoneSolutionBits, want: 0xFFFFFFFF},
+		{name: "phone 14", difficulty: 14, bits: phoneSolutionBits, want: 1 << 19},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := threshold(tt.difficulty)
+			bits := tt.bits
+			if bits == 0 {
+				bits = solutionBits
+			}
+			got, err := threshold(tt.difficulty, bits)
 			if !errors.Is(err, tt.err) {
 				t.Logf("want: %v", tt.err)
 				t.Logf("got:  %v", err)

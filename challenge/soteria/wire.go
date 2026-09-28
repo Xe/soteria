@@ -29,9 +29,14 @@ const blockBits = 8
 
 // Solutions per challenge. More solutions at a higher threshold is the same
 // expected work with less variance, which matters for slow phones.
+const solutionBits = 2 // log2(4 solutions)
+
+// Phones (see classify) find 2 solutions at difficulty - phoneDifficultyCut:
+// a quarter of the expected attempts. Fewer solutions widens the spread of
+// solve times, which the smaller total more than pays for.
 const (
-	solutions    = 4
-	solutionBits = 2 // log2(solutions)
+	phoneSolutionBits  = 1 // log2(2 solutions)
+	phoneDifficultyCut = 2
 )
 
 // MaxDifficulty is the highest difficulty whose per-solution threshold keeps
@@ -65,7 +70,7 @@ type Params struct {
 // bits, not the sha256 method's hex digits (16^difficulty): one attempt is
 // far more work than one SHA-256, so a factor of 16 per step is too coarse.
 // Difficulty 4n asks for as many attempts as sha256 difficulty n.
-func threshold(difficulty int) (uint32, error) {
+func threshold(difficulty, solutionBits int) (uint32, error) {
 	if difficulty < 0 || difficulty > MaxDifficulty {
 		return 0, fmt.Errorf("%w: %d not in 0..%d", ErrDifficulty, difficulty, MaxDifficulty)
 	}
@@ -80,11 +85,30 @@ func threshold(difficulty int) (uint32, error) {
 // issueChallenge). With h = sha512(randomData), the program seed is h[0..8]
 // little-endian and the challenge bytes are h[32..64].
 func NewParams(randomData []byte, difficulty int) (*Params, error) {
+	return newParams(randomData, difficulty, solutionBits)
+}
+
+// NewPhoneParams is NewParams for a phone: 2 solutions at difficulty -
+// phoneDifficultyCut (at least 0), so a quarter of the expected attempts.
+// Difficulties above MaxDifficulty are still rejected.
+func NewPhoneParams(randomData []byte, difficulty int) (*Params, error) {
+	if difficulty > MaxDifficulty {
+		return nil, fmt.Errorf("%w: %d not in 0..%d", ErrDifficulty, difficulty, MaxDifficulty)
+	}
+	return newParams(randomData, PhoneDifficulty(difficulty), phoneSolutionBits)
+}
+
+// PhoneDifficulty is the difficulty a phone gets instead of difficulty.
+func PhoneDifficulty(difficulty int) int {
+	return max(difficulty-phoneDifficultyCut, 0)
+}
+
+func newParams(randomData []byte, difficulty, solutionBits int) (*Params, error) {
 	if len(randomData) < minRandomData {
 		return nil, fmt.Errorf("%w: got %d bytes, want at least %d", ErrRandomData, len(randomData), minRandomData)
 	}
 
-	t, err := threshold(difficulty)
+	t, err := threshold(difficulty, solutionBits)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +121,7 @@ func NewParams(randomData []byte, difficulty int) (*Params, error) {
 		Mix:        [6]uint32{8, 3, 2, 3, 2, 1},
 		Scratchpad: 1 << 14,
 		Threshold:  t,
-		Solutions:  solutions,
+		Solutions:  1 << solutionBits,
 		Flags:      flagChained | flagFold | flagFill | blockBits<<flagBlockShift,
 	}
 	copy(p.Challenge[:], h[32:64])

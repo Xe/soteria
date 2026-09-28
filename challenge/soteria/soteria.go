@@ -26,6 +26,7 @@ import (
 	"github.com/TecharoHQ/anubis"
 	chall "github.com/TecharoHQ/anubis/lib/challenge"
 	"github.com/TecharoHQ/anubis/lib/localization"
+	mrc "github.com/TecharoHQ/mobile-request-classifier"
 	"github.com/a-h/templ"
 )
 
@@ -60,6 +61,7 @@ type Impl struct {
 	setupErr error
 
 	server      *module
+	classifier  *mrc.Middleware
 	fingerprint string
 	cacheBuster string
 }
@@ -118,7 +120,15 @@ func (i *Impl) load(ctx context.Context) error {
 		h.Write(data)
 	}
 
+	// Its own wazero runtime; this runs once, so it can't race ours.
+	classifier, err := newClassifier(ctx)
+	if err != nil {
+		server.Close(ctx) //nolint:errcheck
+		return fmt.Errorf("soteria: can't load the mobile request classifier: %w", err)
+	}
+
 	i.server = server
+	i.classifier = classifier
 	i.fingerprint = fmt.Sprintf("%016x", sfp)
 	i.cacheBuster = hex.EncodeToString(h.Sum(nil))[:16]
 	return nil
@@ -172,9 +182,14 @@ func (i *Impl) Issue(w http.ResponseWriter, r *http.Request, lg *slog.Logger, in
 		return nil, err
 	}
 
-	p, err := paramsFor(in.Challenge, in.Rule.Challenge.Difficulty)
+	difficulty := in.Rule.Challenge.Difficulty
+	phone := i.isPhone(r, lg, in)
+	p, err := paramsFor(in.Challenge, difficulty, phone)
 	if err != nil {
 		return nil, err
+	}
+	if phone {
+		difficulty = PhoneDifficulty(difficulty)
 	}
 
 	loc := localization.GetLocalizer(r)
@@ -184,7 +199,7 @@ func (i *Impl) Issue(w http.ResponseWriter, r *http.Request, lg *slog.Logger, in
 
 	data := info{
 		Request:     hex.EncodeToString(p.Request(nil)),
-		Difficulty:  in.Rule.Challenge.Difficulty,
+		Difficulty:  difficulty,
 		Threshold:   p.Threshold,
 		Solutions:   p.Solutions,
 		Fingerprint: i.fingerprint,
@@ -235,7 +250,8 @@ func (i *Impl) Validate(r *http.Request, lg *slog.Logger, in *chall.ValidateInpu
 		return chall.NewError("validate", "invalid response", fmt.Errorf("%w: elapsedTime: %w", chall.ErrInvalidFormat, err))
 	}
 
-	p, err := paramsFor(in.Challenge, in.Rule.Challenge.Difficulty)
+	phone := wasPhone(r.Context(), lg, in.Store, in.Challenge.ID)
+	p, err := paramsFor(in.Challenge, in.Rule.Challenge.Difficulty, phone)
 	if err != nil {
 		return chall.NewError("validate", "invalid challenge", fmt.Errorf("%w: %w", chall.ErrInvalidFormat, err))
 	}
@@ -278,10 +294,14 @@ func (i *Impl) Validate(r *http.Request, lg *slog.Logger, in *chall.ValidateInpu
 	return nil
 }
 
-func paramsFor(c *chall.Challenge, difficulty int) (*Params, error) {
+// paramsFor derives c's params, with the phone discount if phone.
+func paramsFor(c *chall.Challenge, difficulty int, phone bool) (*Params, error) {
 	randomData, err := hex.DecodeString(c.RandomData)
 	if err != nil {
 		return nil, fmt.Errorf("soteria: can't decode random data: %w", err)
+	}
+	if phone {
+		return NewPhoneParams(randomData, difficulty)
 	}
 	return NewParams(randomData, difficulty)
 }
