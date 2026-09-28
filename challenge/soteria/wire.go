@@ -32,11 +32,11 @@ const blockBits = 8
 const solutionBits = 2 // log2(4 solutions)
 
 // Phones (see classify) find 2 solutions at difficulty - phoneDifficultyCut:
-// a quarter of the expected attempts. Fewer solutions widens the spread of
+// a sixteenth of the expected attempts. Fewer solutions widens the spread of
 // solve times, which the smaller total more than pays for.
 const (
 	phoneSolutionBits  = 1 // log2(2 solutions)
-	phoneDifficultyCut = 2
+	phoneDifficultyCut = 4
 )
 
 // MaxDifficulty is the highest difficulty whose per-solution threshold keeps
@@ -89,7 +89,7 @@ func NewParams(randomData []byte, difficulty int) (*Params, error) {
 }
 
 // NewPhoneParams is NewParams for a phone: 2 solutions at difficulty -
-// phoneDifficultyCut (at least 0), so a quarter of the expected attempts.
+// phoneDifficultyCut (at least 0), so a sixteenth of the expected attempts.
 // Difficulties above MaxDifficulty are still rejected.
 func NewPhoneParams(randomData []byte, difficulty int) (*Params, error) {
 	if difficulty > MaxDifficulty {

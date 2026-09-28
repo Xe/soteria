@@ -45,8 +45,8 @@ func TestNewPhoneParams(t *testing.T) {
 	}
 	// Expected attempts are solutions * 2^32 / threshold.
 	attempts := func(p *Params) float64 { return float64(p.Solutions) * (1 << 32) / float64(p.Threshold) }
-	if got, want := attempts(phone), attempts(full)/4; got != want {
-		t.Errorf("phone attempts = %v, want a quarter of %v", got, attempts(full))
+	if got, want := attempts(phone), attempts(full)/16; got != want {
+		t.Errorf("phone attempts = %v, want a sixteenth of %v", got, attempts(full))
 	}
 	if phone.Seed != full.Seed || phone.Challenge != full.Challenge {
 		t.Error("phone params should only change the threshold and solution count")
@@ -59,7 +59,7 @@ func TestNewPhoneParams(t *testing.T) {
 		err        error
 	}{
 		{name: "low difficulty is free", difficulty: 1, threshold: 0xFFFFFFFF},
-		{name: "max", difficulty: MaxDifficulty, threshold: 1 << 2},
+		{name: "max", difficulty: MaxDifficulty, threshold: 1 << 4},
 		{name: "too high", difficulty: MaxDifficulty + 1, err: ErrDifficulty},
 		{name: "negative", difficulty: -1, threshold: 0xFFFFFFFF},
 	} {
