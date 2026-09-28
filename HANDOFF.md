@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, 2,257 lines, 29 tests passing. Nothing is wired
+Status: working prototype, about 2,300 lines, 30 tests passing (plus 1 ignored benchmark). Nothing is wired
 into Anubis yet.
 
 ## Build and test
@@ -18,12 +18,13 @@ Everything targets `wasm32-wasip1`; `.cargo/config.toml` sets the target,
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 29 tests, ~1 s
+cargo test --release                       # 30 tests, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 ```
 
-Last verified with rustc 1.98.1 and wasmtime 49.0.1.
+Last verified with rustc 1.98.1 and wasmtime 48.0.0. If `cargo test` reports
+"running 0 tests", `.cargo/config.toml` is missing and the build went native.
 
 WASI builds use `panic = abort`, so the first panicking test kills the whole
 test binary and the summary line is missing. Search the output for
@@ -108,8 +109,14 @@ solved = be32(digest[0..4]) < threshold
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad, threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on. The default challenge is about 63 bundles and packs
-about 2.8 slots per bundle. `Challenge::with_budget` sets the threshold so
-expected bundles equal a target.
+about 2.8 slots per bundle, but costs about 361 bundle-equivalents per attempt
+once `fill`, `fold` and `sha256` are charged for their real work.
+`Challenge::attempt_cost` is bundles + `ROUND_COST` per 32-byte mix round
+(`fill`, `fold`) + `SHA_COST` per `sha256`. `expected_work` and `with_budget`
+use it. The two weights (0.25 and 13.0) were measured on the current
+interpreter by the ignored `calibrate_memory_cost` test; rerun it and update
+the constants after roadmap items 5 or 9, since a faster interpreter makes
+memory relatively more expensive.
 
 Registers: r0 = 0, r1..r8 state, r9..r13 temps (round-robin), r14 scratchpad
 mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
@@ -117,7 +124,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 
 ## Known issues
 
-- **Fuel ≠ work.** `fill`, `fold` and `sha256` each cost 1 fuel but do far more (about 500 mixing rounds per lane each at 16 KiB). `expected_bundles` undercounts; it needs a memory term.
+- **Fuel is not work.** `fill`, `fold` and `sha256` still cost 1 fuel each. Fuel only bounds execution; the work metric is `attempt_cost`. Its weights are interpreter-specific (see above).
 - **`Vm::store` allocates a `Vec` per store** through its closure. Easy performance fix.
 - **The read phase loads every operand for every slot**, needed or not.
 - `Write::Sha` is also used for `fold` output; it should be renamed to something like `Write::Mem32`.
@@ -126,7 +133,7 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 
 ## Roadmap (suggested order)
 
-1. **Work metric memory term.** Add a per-attempt cost for `fill`/`fold`/`sha256` to `expected_bundles` and `with_budget`. Done when a budget test accounts for scratchpad size.
+1. ~~**Work metric memory term.**~~ Done: `attempt_cost`, `expected_work` (was `expected_bundles`), `budget_accounts_for_scratchpad`.
 2. **Best-effort solving.**
    - Client: hash until a deadline, keep the K lowest 64-bit digest prefixes, and submit only the nonces.
    - Server: rejects duplicates, caps K (≈32), dedupes batches, recomputes the digests, and credits `N̂ = (K−1) / u_(K)` where `u` is the K-th smallest digest as a fraction of 2⁶⁴.

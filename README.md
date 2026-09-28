@@ -88,7 +88,8 @@ Difficulty axes (`Params`): gadget count, category mix, scratchpad size,
 threshold (smooth success probability), number of solutions (less variance),
 and chaining (solutions can't be searched in parallel).
 `Challenge::with_budget` picks the threshold so expected work equals a given
-number of bundles.
+number of bundle-equivalents: bundles plus the real cost of `fill`, `fold`
+and `sha256`, which take 1 fuel each but do far more work (`attempt_cost`).
 
 ## Assembler (`asm.rs`)
 

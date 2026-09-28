@@ -225,11 +225,12 @@ mod gadget_tests {
 
     #[test]
     fn packing_stats() {
-        let mut ratios = vec![];
+        let (mut ratios, mut costs) = (vec![], vec![]);
         for seed in 0..50 {
             let c = Challenge::new(seed, Params::default());
             let slots: usize = c.program.bundles().iter().flatten().filter(|s| s.op != Op::Nop).count();
             ratios.push(slots as f64 / c.bundles() as f64);
+            costs.push(c.attempt_cost());
             let serial = Challenge::new_unscheduled(seed, Params::default()).bundles();
             if seed == 0 {
                 println!("seed 0: {} steps -> {} bundles, gadgets {:?}", serial, c.bundles(), c.gadgets);
@@ -237,17 +238,80 @@ mod gadget_tests {
         }
         let avg = ratios.iter().sum::<f64>() / ratios.len() as f64;
         println!("average slots per bundle: {avg:.2}");
+        println!("average attempt cost: {:.0} bundle-equivalents", costs.iter().sum::<f64>() / costs.len() as f64);
         assert!(avg > 1.5);
+    }
+
+    /// Measures the weights behind `gadgets::ROUND_COST` and `SHA_COST` on
+    /// this interpreter. Rerun after interpreter or compiler changes:
+    /// `cargo test --release calibrate_memory_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn calibrate_memory_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let per = |reps: u32, mut f: Box<dyn FnMut()>| {
+            f();
+            let t = Instant::now();
+            for _ in 0..reps {
+                f();
+            }
+            t.elapsed().as_secs_f64() / reps as f64
+        };
+
+        let p = Params { gadgets: 4000, mix: Mix { sha: 0, ..Default::default() }, scratchpad: 256, fill: false, fold: false, ..Default::default() };
+        let c = Challenge::new(1, p);
+        let n = c.bundles() as f64;
+        let bundle = per(50, Box::new(move || { black_box(c.attempt(black_box(&[1; 32]), 0)); })) / n;
+
+        // One VM mix round = one 32-byte chunk in each of the 4 lanes.
+        let mut buf = vec![0u8; 1 << 16];
+        let chunks = (buf.len() / 32) as f64;
+        let fill = per(200, Box::new(move || fill_lane(black_box(&[3; 32]), black_box(&mut buf)))) * LANES as f64 / chunks;
+        let mem = vec![5u8; 1 << 16];
+        let fold = per(200, Box::new(move || { black_box(fold_lane(black_box(&mem))); })) * LANES as f64 / chunks;
+        let block = [9u8; 64];
+        let sha = per(20000, Box::new(move || { black_box(sha4::sha256x4(black_box([&block; 4]))); }));
+
+        println!("bundle {:.1} ns", bundle * 1e9);
+        println!("fill round {:.2} bundles, fold round {:.2} bundles", fill / bundle, fold / bundle);
+        println!("sha256x4 {:.2} bundles", sha / bundle);
     }
 
     #[test]
     fn fuel_is_exact_and_budget_hits_target() {
         let c = Challenge::with_budget(3, Params { solutions: 4, ..Default::default() }, 2e6);
-        let rel = c.expected_bundles() / 2e6;
+        let rel = c.expected_work() / 2e6;
         assert!((0.99..1.01).contains(&rel), "{rel}");
         let mut vm = Vm::new(&[], 0, c.bundles() as u64);
         vm.run(&c.program).unwrap();
         assert_eq!(vm.fuel, 0);
+    }
+
+    /// Same seed and budget at different scratchpad sizes: the memory term
+    /// grows with the scratchpad, so the budget buys fewer attempts and the
+    /// threshold rises to compensate.
+    #[test]
+    fn budget_accounts_for_scratchpad() {
+        let mut prev: Option<Challenge> = None;
+        for shift in [8, 10, 12, 14, 16] {
+            let c = Challenge::with_budget(5, Params { scratchpad: 1 << shift, ..Default::default() }, 1e8);
+            let rel = c.expected_work() / 1e8;
+            assert!((0.99..1.01).contains(&rel), "scratchpad 2^{shift}: {rel}");
+            if let Some(p) = prev {
+                assert_eq!(p.program.bundles().len(), c.program.bundles().len());
+                // fill and fold each charge one round per 32 bytes.
+                let rounds = 2.0 * (c.params.scratchpad - p.params.scratchpad) as f64 / 32.0;
+                let grew = c.attempt_cost() - p.attempt_cost();
+                assert!((grew - rounds * gadgets::ROUND_COST).abs() < 1e-9, "{grew}");
+                assert!(c.params.threshold > p.params.threshold);
+            }
+            prev = Some(c);
+        }
+        // Without fill and fold the scratchpad size costs nothing.
+        let small = Challenge::new(5, Params { scratchpad: 256, fill: false, fold: false, ..Default::default() });
+        let big = Challenge::new(5, Params { scratchpad: 1 << 16, fill: false, fold: false, ..Default::default() });
+        assert_eq!(small.attempt_cost(), big.attempt_cost());
     }
 
     /// With no gadgets there are no loads, so the scratchpad can only reach

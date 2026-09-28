@@ -23,7 +23,7 @@
 
 use crate::puzzle::SplitMix;
 use crate::sched::{schedule, sequential, Step};
-use crate::{lanes, sha4, Op::*, Program, Slot, Vm, LANES, MEM_SIZE};
+use crate::{lanes, sha4, Op::*, Program, Slot, Vm, ARENA_START, LANES, MEM_SIZE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gadget {
@@ -118,6 +118,13 @@ impl Default for Params {
         Params { gadgets: 32, mix: Mix::default(), scratchpad: 1 << 14, threshold: 1 << 24, solutions: 1, chained: false, fold: true, fill: true }
     }
 }
+
+/// One mix round (32 bytes in each of the 4 lanes, as `fill` and `fold` do)
+/// in bundles. Measured by `calibrate_memory_cost` on the interpreter; it
+/// will shift when the interpreter gets faster or challenges get compiled.
+pub const ROUND_COST: f64 = 0.25;
+/// One `sha256` (two 4-lane compressions) in bundles, measured the same way.
+pub const SHA_COST: f64 = 13.0;
 
 const STATE: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 const MASK: u8 = 14;
@@ -271,11 +278,11 @@ impl Challenge {
         Self::build(seed, params, true)
     }
 
-    /// Pick the threshold so that expected total work is `budget` bundles.
-    /// Every other axis is left as given.
+    /// Pick the threshold so that expected total work is `budget`
+    /// bundle-equivalents (see `attempt_cost`). Every other axis is left as given.
     pub fn with_budget(seed: u64, mut params: Params, budget: f64) -> Self {
-        let bundles = Self::new(seed, params).bundles() as f64;
-        let attempts = budget / (bundles * params.solutions as f64);
+        let cost = Self::new(seed, params).attempt_cost();
+        let attempts = budget / (cost * params.solutions as f64);
         params.threshold = (4_294_967_296.0 / attempts.max(1.0)).clamp(1.0, u32::MAX as f64) as u32;
         Self::new(seed, params)
     }
@@ -340,10 +347,24 @@ impl Challenge {
         self.program.bundles().len()
     }
 
-    /// Expected bundles to solve every sub-challenge: the single "work" number
-    /// a policy can reason about.
-    pub fn expected_bundles(&self) -> f64 {
-        self.bundles() as f64 * (4_294_967_296.0 / self.params.threshold as f64) * self.params.solutions as f64
+    /// Work per attempt in bundle-equivalents. `fill`, `fold` and `sha256`
+    /// cost 1 fuel each but do far more work, so they're charged by what they
+    /// compute: mix rounds over the scratchpad and SHA-256 compressions.
+    pub fn attempt_cost(&self) -> f64 {
+        let s = self.params.scratchpad as f64;
+        let mem: f64 = self.program.bundles().iter().flatten().map(|slot| match slot.op {
+            Sha256 => SHA_COST,
+            Fill => (s - ARENA_START as f64) / 32.0 * ROUND_COST,
+            Fold => (s / 32.0 + 4.0) * ROUND_COST,
+            _ => 0.0,
+        }).sum();
+        self.bundles() as f64 + mem
+    }
+
+    /// Expected bundle-equivalents to solve every sub-challenge: the single
+    /// "work" number a policy can reason about.
+    pub fn expected_work(&self) -> f64 {
+        self.attempt_cost() * (4_294_967_296.0 / self.params.threshold as f64) * self.params.solutions as f64
     }
 
     pub(crate) fn image(&self, sub: &[u8; 32]) -> Vec<u8> {
