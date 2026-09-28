@@ -88,9 +88,11 @@ pub enum Gadget {
     SMulHiTap,
     // Float: fast inverse square root
     RsqrtTap,
+    // Memory: a register-file exchange
+    MemBlock,
 }
 
-pub const ALL: [Gadget; 37] = {
+pub const ALL: [Gadget; 38] = {
     use Gadget::*;
     [
         AddRot,
@@ -130,6 +132,7 @@ pub const ALL: [Gadget; 37] = {
         CondRepeat,
         SMulHiTap,
         RsqrtTap,
+        MemBlock,
     ]
 };
 
@@ -179,7 +182,9 @@ impl Mix {
             ),
             (
                 self.memory,
-                &[MemLoad, MemScatter, MemChase, MemRmw, MemXorLoad, MemWalk],
+                &[
+                    MemLoad, MemScatter, MemChase, MemRmw, MemXorLoad, MemWalk, MemBlock,
+                ],
             ),
             (
                 self.lanes,
@@ -791,6 +796,34 @@ pub(crate) fn emit(
                     one(And, t, t, MASK, 0),
                     one(Ld, t, t, 0, 0),
                     one(Add, x, x, t, 0),
+                ]);
+            }
+        }
+        MemBlock => {
+            // RandomX's loop prologue and epilogue, cut down to stay
+            // invertible. Key k = x is never written: every other pool word
+            // gets one word of the 32-byte block at k, then the block goes
+            // back at a second k-derived address as m ^ rotr(k, r). Storing
+            // the updated words would leave copies of the state for a later
+            // tap to cancel against; storing only functions of k and memory
+            // leaves just k itself at risk, like MemScatter.
+            let (b, a, c, t) = (tmp.r(), tmp.r(), tmp.r(), tmp.r());
+            out.extend([
+                one(Li, b, 0, 0, !31),
+                one(And, b, b, MASK, 0),
+                one(And, a, x, b, 0),
+                one(Rotr, c, x, 0, k),
+                one(And, b, c, b, 0),
+            ]);
+            let words = &regs[1..];
+            for (i, &r) in words.iter().enumerate() {
+                out.extend([one(Ld, t, a, 0, 4 * i as i32), one(Xor, r, r, t, 0)]);
+            }
+            for i in 0..words.len() as i32 {
+                out.extend([
+                    one(Ld, t, a, 0, 4 * i),
+                    one(Xor, t, t, c, 0),
+                    one(St, 0, b, t, 4 * i),
                 ]);
             }
         }

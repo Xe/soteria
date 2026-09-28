@@ -466,6 +466,49 @@ mod gadget_tests {
         assert_eq!(tiers, HashSet::from(want), "every tier occurs");
     }
 
+    /// `MemBlock` xors the 32-byte block at key k into the other seven
+    /// state words, and stores the block at rotr(k, r) as m ^ rotr(k, r).
+    #[test]
+    fn mem_block_exchanges_the_register_file() {
+        let mut rng = puzzle::SplitMix(0xB10C);
+        let image: Vec<u8> = (0..1 << 16).map(|_| rng.next() as u8).collect();
+        let word = |m: &[u8], a: u32| u32::from_le_bytes(m[a as usize..][..4].try_into().unwrap());
+        for seed in 0..16 {
+            let prog = gadgets::solo(gadgets::Gadget::MemBlock, seed);
+            let mut vm = Vm::new(&image, 0, gadgets::fuel(&prog));
+            let before: [[u32; 4]; 9] =
+                core::array::from_fn(|_| core::array::from_fn(|_| rng.next() as u32));
+            for w in 1..=8 {
+                vm.r[w] = from_lanes(before[w]);
+            }
+            vm.run(&prog).unwrap();
+            let after = vm.r.map(lanes);
+            let kept: Vec<usize> = (1..=8).filter(|&i| after[i] == before[i]).collect();
+            assert_eq!(kept.len(), 1, "seed {seed}: only the key survives");
+            let key = kept[0];
+            for l in 0..4 {
+                let mem = &vm.mem[l * MEM_SIZE..][..1 << 16];
+                let (k, a) = (before[key][l], before[key][l] & 0xFFE0);
+                let block: Vec<u32> = (0..7).map(|i| word(&image, a + 4 * i)).collect();
+                let mut deltas: Vec<u32> = (1..=8)
+                    .filter(|&i| i != key)
+                    .map(|i| after[i][l] ^ before[i][l])
+                    .collect();
+                let mut want = block.clone();
+                deltas.sort();
+                want.sort();
+                assert_eq!(deltas, want, "seed {seed} lane {l}: loads");
+                // Word i is reloaded just before store i, so even when the
+                // blocks coincide, b ends up holding the loaded block ^ c.
+                let stored = (1..32).any(|r| {
+                    let c = k.rotate_right(r);
+                    (0..7).all(|i| word(mem, (c & 0xFFE0) + 4 * i) == block[i as usize] ^ c)
+                });
+                assert!(stored, "seed {seed} lane {l}: stores");
+            }
+        }
+    }
+
     #[test]
     fn megabyte_scratchpad_solves_and_verifies() {
         let p = Params {

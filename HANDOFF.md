@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 56 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 57 tests passing (plus 3 ignored benchmarks). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 56 tests across the workspace, ~1 s
+cargo test --release                       # 57 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo test --release bench_solve -- --ignored --nocapture # solve time per Anubis difficulty, 4..=12
@@ -53,7 +53,7 @@ A Cargo workspace. The dependency order is `soteria-isa <- soteria <-
 | `crates/soteria-isa/src/sched.rs` | List scheduler: sequential steps to bundles, respecting hazards |
 | `crates/soteria/src/lib.rs` | Re-exports the ISA. The VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`. wasm32 only |
 | `crates/soteria/src/sha4.rs` | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only) |
-| `crates/soteria/src/gadgets.rs` | The 37 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
+| `crates/soteria/src/gadgets.rs` | The 38 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
 | `crates/soteria/src/best.rs` | Best-effort mode: `Best` (client K-lowest accumulator), `search_best`, `verify_best`, `estimate` |
 | `crates/soteria/src/hashcash.rs` | Hand-written hashcash program + host search/verify |
 | `crates/soteria/src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested. Also home of `SplitMix`, which `gadgets` uses |
@@ -141,11 +141,11 @@ per sub-challenge, can't reuse compiled blocks either.
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad (up to 1 MiB), threshold `1 << 24`, 1 solution, not
 chained, fold on, fill on, block 0 (one program). The default challenge is
-about 95 bundles and packs about 2.5 slots per bundle, but costs about 524
+about 105 bundles and packs about 2.4 slots per bundle, but costs about 543
 bundle-equivalents per attempt once `fill`, `fold` and `sha256` are charged
 for their real work and loops for their expected iterations (it was 361
 before the 16 gadgets of roadmap item 7, 439 before `MemWalk`, 455 before
-`VarRot`, 458 before `CondRepeat`, 521 before `SMulHiTap`, 524 before `RsqrtTap` and 529 before tiered masks; `FoldTap` alone is about 129).
+`VarRot`, 458 before `CondRepeat`, 521 before `SMulHiTap`, 524 before `RsqrtTap`, 529 before tiered masks and 524 before `MemBlock`; `FoldTap` alone is about 129).
 `packing_stats` prints these. `Challenge::attempt_cost` is, per bundle,
 1 + `ROUND_COST` per 32-byte mix round (`fill`, `fold`) + `SHA_COST` per
 `sha256`, times `expected_repeats()` (about 6.86) inside a loop.
@@ -185,7 +185,7 @@ Registers: r0 = 0, r1..r8 state, r9..r13 temps (round-robin; r13 is the
 - **The read phase loads every operand for every slot**, needed or not.
 - `Write::Sha` is also used for `fold` output; it should be renamed to something like `Write::Mem32`.
 - `hashcash` only checks the first digest word, so difficulty is capped at 32 bits.
-- **Bijectivity is per gadget, not across gadgets.** Memory can hold a copy of a state word's current value (after `ShaAnchor`, `mem[64..96]` equals r1..r8; `MemScatter` stores a state word as is). A later memory tap whose address lands there computes `x ^= f(x)`. `every_gadget_is_injective` tests gadgets alone, so it can't see this. `ShaFeistel` zeroes x's word in the block for this reason. The odds per load are small (8 words of a 4096-word scratchpad), but a fix would mean keeping memory taps away from state copies.
+- **Bijectivity is per gadget, not across gadgets.** Memory can hold a copy of a state word's current value (after `ShaAnchor`, `mem[64..96]` equals r1..r8; `MemScatter` stores a state word as is; `MemBlock` stores its loaded block ^ `rotr(k, r)`, so a later tap on k's register before k changes computes `x ^= f(x)` if it lands there). A later memory tap whose address lands there computes `x ^= f(x)`. `every_gadget_is_injective` tests gadgets alone, so it can't see this. `ShaFeistel` zeroes x's word in the block for this reason. The odds per load are small (8 words of a 4096-word scratchpad), but a fix would mean keeping memory taps away from state copies.
 - `puzzle.rs` is legacy. Keep it working, but build new features on `gadgets.rs`.
 
 ## Roadmap (suggested order)

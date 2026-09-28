@@ -69,14 +69,14 @@ gadgets over the state `r1..r8` → `sha256(state ‖ fold(scratchpad))` →
 compare the first word to a threshold. The fold means every store reaches the
 digest, so an attacker's compiler can't delete stores as dead code. Before the
 gadgets run, `fill` expands `sha256(challenge ‖ nonce)` into the arena, so
-memory is different for every challenge and every nonce. There are 37 gadgets:
+memory is different for every challenge and every nonce. There are 38 gadgets:
 
 | Group | Gadgets |
 |---|---|
 | ALU | `AddRot`, `XorRot`, `SubRot`, `MulOdd`, `AddBswap`, `BswapTap`, `XorShift`, `ChTap`, `MajTap`, `SigmaTap`, `MulAddTap`, `VarRot`, `CondRepeat` |
 | Taps | `PopcntTap`, `ClzTap`, `MulHiTap`, `CmpMaskTap`, `SMulHiTap` |
 | Float taps | `SqrtTap`, `DivTap`, `FMulTap`, `FAddTap`, `HypotTap`, `RsqrtTap` |
-| Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad`, `MemWalk` |
+| Memory | `MemLoad`, `MemScatter`, `MemChase`, `MemRmw`, `MemXorLoad`, `MemWalk`, `MemBlock` |
 | Lane movement | `CondSwap`, `WordRotate`, `CondNegate`, `CondWordRotate` |
 | Expensive | `ShaAnchor`, `ShaFeistel`, `FoldTap` |
 
@@ -90,7 +90,10 @@ full 32-bit entropy. `MemWalk` is an 8-hop pointer chase: each address comes
 from the previous load, so it costs memory latency rather than throughput.
 The other memory taps address a 16 KiB window half the time, a 256 KiB
 window a quarter of the time and the whole scratchpad otherwise, like
-RandomX's L1/L2/L3 scratchpad levels.
+RandomX's L1/L2/L3 scratchpad levels. `MemBlock` is RandomX's register-file
+exchange cut down to stay invertible: the 32-byte block at key word `k` is
+xored into the other seven words, then written back elsewhere as
+`m ^ rotr(k, r)`.
 `VarRot` rotates by `y & 31` per lane, a barrel of five guarded fixed
 rotates, since WASM SIMD only shifts by a scalar. `CondRepeat` is the only
 loop: it runs two gadgets `1 + (3 bits of z)` times per lane, and the batch
