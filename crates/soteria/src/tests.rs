@@ -254,7 +254,9 @@ mod gadget_tests {
     #[test]
     fn scheduler_matches_sequential() {
         for seed in 0..20 {
+            let block = [0, 5][seed as usize % 2];
             let p = Params {
+                block,
                 gadgets: 48,
                 mix: Mix {
                     alu: 1,
@@ -270,11 +272,11 @@ mod gadget_tests {
             let serial = Challenge::new_unscheduled(seed, p);
             assert_eq!(packed.gadgets, serial.gadgets);
             let sub = [seed as u8; 32];
-            for base in [0, 400, 8000] {
+            for base in [0, 400, 404, 8000] {
                 assert_eq!(
                     packed.attempt(&sub, base),
                     serial.attempt(&sub, base),
-                    "seed {seed} base {base}"
+                    "seed {seed} block {block} base {base}"
                 );
             }
         }
@@ -381,17 +383,34 @@ mod gadget_tests {
             fold / bundle
         );
         println!("sha256x4 {:.2} bundles", sha / bundle);
+
+        // Building one default program, which `Params::block` pays per block.
+        let mut seed = 0;
+        let build = per(
+            500,
+            Box::new(move || {
+                seed += 1;
+                black_box(Challenge::new(black_box(seed), Params::default()));
+            }),
+        );
+        let attempt = Challenge::new(1, Params::default()).attempt_cost() * bundle;
+        println!(
+            "default program build {:.1} us, {:.2} attempts",
+            build * 1e6,
+            build / attempt
+        );
     }
 
     /// Resuming between any two batches finds exactly what `solve` finds.
     #[test]
     fn solver_steps_match_solve() {
         use crate::gadgets::{Progress, Solver};
-        for chained in [false, true] {
+        for (chained, block) in [(false, 0), (true, 0), (true, 4)] {
             let p = Params {
                 threshold: 1 << 27,
                 solutions: 3,
                 chained,
+                block,
                 ..Default::default()
             };
             let (c, challenge) = (Challenge::new(8, p), [3u8; 32]);
@@ -400,7 +419,11 @@ mod gadget_tests {
                 let mut s = Solver::new(&c, &challenge);
                 assert_eq!(s.step(&c, 0), Progress::Working);
                 while s.step(&c, chunk) == Progress::Working {}
-                assert_eq!(s.nonces(), want, "chained={chained} chunk={chunk}");
+                assert_eq!(
+                    s.nonces(),
+                    want,
+                    "chained={chained} block={block} chunk={chunk}"
+                );
             }
         }
     }
@@ -540,24 +563,66 @@ mod gadget_tests {
     #[test]
     fn solve_verify_chained_and_not() {
         let challenge = *b"anubis says hi to every phone :3";
-        for chained in [false, true] {
+        for (chained, block) in [(false, 0), (true, 0), (false, 3), (true, 3)] {
             let p = Params {
                 solutions: 3,
                 chained,
                 threshold: 1 << 26,
+                block,
                 ..Default::default()
             };
             let c = Challenge::new(11, p);
             let nonces = c.solve(&challenge, 1 << 12).expect("solved");
             assert!(
                 c.verify(&challenge, &nonces),
-                "chained={chained} {nonces:?}"
+                "chained={chained} block={block} {nonces:?}"
             );
             // Same nonces against a different challenge: ~2^-18 chance to pass.
             assert!(!c.verify(b"a different challenge, same seed", &nonces));
             assert!(!c.verify(&challenge, &nonces[..2]));
-            println!("chained={chained}: {nonces:?}");
+            println!("chained={chained} block={block}: {nonces:?}");
         }
+    }
+
+    /// With `block` set, each 2^block nonces of each sub-challenge run their
+    /// own program, and every mode still agrees with its verifier.
+    #[test]
+    fn blocks_get_their_own_programs() {
+        use crate::best::Best;
+        let p = Params {
+            block: 4,
+            ..Default::default()
+        };
+        let c = Challenge::new(5, p);
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        assert_eq!(c.program_for(&a, 16), c.program_for(&a, 31));
+        assert_ne!(c.program_for(&a, 15), c.program_for(&a, 16));
+        assert_ne!(c.program_for(&a, 16), c.program_for(&b, 16));
+        let off = Challenge::new(5, Params::default());
+        assert_eq!(off.program_for(&a, 16), off.program);
+        assert_eq!(off.program_for(&a, 1 << 20), off.program);
+
+        // Same seed and sub, blocks on or off: different digests, so the
+        // block programs really run.
+        assert_ne!(c.attempt(&a, 16), off.attempt(&a, 16));
+        // The cache doesn't leak between blocks: out of order matches fresh.
+        let fresh = |base| Challenge::new(5, p).attempt(&a, base);
+        for base in [16, 0, 28, 4, 16] {
+            assert_eq!(c.attempt(&a, base), fresh(base), "base {base}");
+        }
+
+        let small = Params {
+            gadgets: 8,
+            scratchpad: 256,
+            block: 2,
+            ..Default::default()
+        };
+        let c = Challenge::new(9, small);
+        let mut best = Best::new(16);
+        c.search_best(&a, &mut best, 0..64);
+        assert_eq!(c.verify_best(&a, &best.nonces()), best.estimate());
+        let unblocked = Challenge::new(9, Params { block: 0, ..small });
+        assert_ne!(unblocked.verify_best(&a, &best.nonces()), best.estimate());
     }
 }
 
@@ -860,6 +925,7 @@ mod wire_tests {
             gadgets: 7,
             solutions: 3,
             fold: false,
+            block: 10,
             ..Default::default()
         };
         let r = parse(&request(42, &p, &[9; 32], &[1, 2, 3])).ok().unwrap();

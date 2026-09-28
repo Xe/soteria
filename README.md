@@ -86,7 +86,11 @@ memory hazards (about 2.8 slots per bundle on the default mix).
 
 Difficulty axes (`Params`): gadget count, category mix, scratchpad size,
 threshold (smooth success probability), number of solutions (less variance),
-and chaining (solutions can't be searched in parallel).
+chaining (solutions can't be searched in parallel), and program blocks.
+With `block = k`, nonce `n` of each sub-challenge runs the program built from
+`block_seed(seed, sub, n >> k)` instead of one program per challenge, so an
+attacker who compiles programs pays for a compile every 2^k nonces. Building a
+default program costs about 0.6 batch attempts in the interpreter.
 `Challenge::with_budget` picks the threshold so expected work equals a given
 number of bundle-equivalents: bundles plus the real cost of `fill`, `fold`
 and `sha256`, which take 1 fuel each but do far more work (`attempt_cost`).

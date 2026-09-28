@@ -9,6 +9,11 @@
 //! solved = be32(digest[0..4]) < threshold
 //! ```
 //!
+//! With `Params::block` set, the gadget sequence is not fixed per challenge:
+//! nonce n of sub-challenge `sub` runs the program built from
+//! `block_seed(seed, sub, n >> block)`, so a program compiled ahead of time
+//! is only good for 2^block nonces.
+//!
 //! Gadget rules: straight-line code, a fixed cost, and bijective on r1..r8
 //! (except `ShaAnchor`, which is a random function). Bijectivity matters: if
 //! the state could collapse, an attacker could memoize final hashes. Most
@@ -24,6 +29,7 @@
 use crate::puzzle::SplitMix;
 use crate::sched::{schedule, sequential, Step};
 use crate::{lanes, sha4, Op::*, Program, Slot, Vm, ARENA_START, LANES, MEM_SIZE};
+use core::cell::RefCell;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gadget {
@@ -133,6 +139,12 @@ pub struct Params {
     /// Expand sha256(challenge || nonce) into the arena before the gadgets
     /// run, so memory contents differ per challenge and per nonce.
     pub fill: bool,
+    /// log2 of the nonces that share a program, 0 or 2..=31. 0 uses one
+    /// program for the whole challenge. Otherwise each block of 2^block
+    /// nonces (lane-aligned, since block >= 2) in each sub-challenge gets its
+    /// own program, so compiling a program can't be amortized over the whole
+    /// search.
+    pub block: u32,
 }
 
 impl Default for Params {
@@ -146,6 +158,7 @@ impl Default for Params {
             chained: false,
             fold: true,
             fill: true,
+            block: 0,
         }
     }
 }
@@ -314,11 +327,26 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
     }
 }
 
-/// A compiled challenge family: one program, reused for every sub-challenge.
+/// A compiled challenge family.
 pub struct Challenge {
+    pub seed: u64,
     pub params: Params,
+    /// The program built from `seed`. With `params.block` = 0 every nonce
+    /// runs it; otherwise it's a representative sample for `attempt_cost`,
+    /// and nonces run `program_for` instead.
     pub gadgets: Vec<Gadget>,
     pub program: Program,
+    unscheduled: bool,
+    /// The last block program built, keyed by its seed. Callers walk nonces
+    /// in order, so one entry is enough.
+    cache: RefCell<Option<(u64, Program)>>,
+}
+
+/// Program seed for nonce block `block` of sub-challenge `sub`. Distinct
+/// blocks of one sub-challenge always get distinct seeds.
+pub fn block_seed(seed: u64, sub: &[u8; 32], block: u32) -> u64 {
+    let s = u64::from_le_bytes(sub[..8].try_into().unwrap());
+    SplitMix(seed ^ s ^ (block as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)).next()
 }
 
 impl Challenge {
@@ -344,64 +372,15 @@ impl Challenge {
         let s = params.scratchpad;
         assert!(s.is_power_of_two() && (256..=MEM_SIZE as u32).contains(&s));
         assert!(params.solutions >= 1 && params.threshold >= 1);
-        let mut rng = SplitMix(seed);
-        let mut tmp = Temps { r: 0, p: 0, f: 0 };
-
-        let mut steps: Vec<Step> = vec![
-            one(St, 0, 0, 15, 32),
-            one(Li, MASK, 0, 0, (s - 1) as i32),
-            one(Li, 9, 0, 0, 64),
-            one(Sha256, 0, 0, 9, 0),
-        ];
-        for (i, &r) in STATE.iter().enumerate() {
-            steps.push(one(Ld, r, 0, 0, 64 + 4 * i as i32));
-        }
-        // After the loads in program order, so it can share their bundle
-        // (the scheduler treats memory as one resource).
-        if params.fill {
-            steps.push(one(Fill, 0, MASK, 9, 0));
-        }
-
-        let gadgets: Vec<Gadget> = (0..params.gadgets)
-            .map(|_| params.mix.pick(&mut rng))
-            .collect();
-        for &g in &gadgets {
-            emit(g, &mut rng, &mut tmp, &mut steps);
-        }
-
-        // Epilogue: block = state (64..96) || fold(scratchpad) (96..128), then hash.
-        for (i, &r) in STATE.iter().enumerate() {
-            steps.push(one(St, 0, 0, r, 64 + 4 * i as i32));
-        }
-        if params.fold {
-            steps.push(one(Li, 10, 0, 0, 96));
-            steps.push(one(Fold, 0, MASK, 10, 0));
-        }
-        steps.push(one(Li, 9, 0, 0, 64));
-        steps.push(one(Sha256, 0, 9, 9, 0));
-        steps.extend([
-            one(Ld, 9, 0, 0, 64),
-            one(Bswap, 9, 9, 0, 0),
-            one(Li, 10, 0, 0, params.threshold as i32),
-            one(CmpLtu, 15, 9, 10, 0),
-        ]);
-
-        let mut bundles = if unscheduled {
-            sequential(&steps)
-        } else {
-            schedule(&steps)
-        };
-        let halt = Slot::new(Halt, 0, 0, 0, 0);
-        let last = bundles.last_mut().unwrap();
-        match last.iter().position(|s| s.op == Nop) {
-            Some(i) => last[i] = halt,
-            None => bundles.push(crate::bundle(&[halt])),
-        }
-
+        assert!(params.block == 0 || (2..=31).contains(&params.block));
+        let (gadgets, program) = compile(seed, &params, unscheduled);
         Challenge {
+            seed,
             params,
             gadgets,
-            program: Program::new(bundles).unwrap(),
+            program,
+            unscheduled,
+            cache: RefCell::new(None),
         }
     }
 
@@ -444,11 +423,43 @@ impl Challenge {
         m
     }
 
+    /// The program nonce `nonce` of sub-challenge `sub` runs.
+    pub fn program_for(&self, sub: &[u8; 32], nonce: u32) -> Program {
+        match self.params.block {
+            0 => self.program.clone(),
+            b => {
+                compile(
+                    block_seed(self.seed, sub, nonce >> b),
+                    &self.params,
+                    self.unscheduled,
+                )
+                .1
+            }
+        }
+    }
+
     /// Run one lane-aligned batch; returns (solved, final digest) per lane.
     pub fn attempt(&self, sub: &[u8; 32], base: u32) -> Option<[(bool, [u8; 32]); LANES]> {
         assert_eq!(base % LANES as u32, 0);
-        let mut vm = Vm::new(&self.image(sub), base, self.bundles() as u64);
-        vm.run(&self.program).ok()?;
+        if self.params.block == 0 {
+            return self.run(&self.program, sub, base);
+        }
+        let key = block_seed(self.seed, sub, base >> self.params.block);
+        let mut cache = self.cache.borrow_mut();
+        if cache.as_ref().is_none_or(|c| c.0 != key) {
+            *cache = Some((key, compile(key, &self.params, self.unscheduled).1));
+        }
+        self.run(&cache.as_ref().unwrap().1, sub, base)
+    }
+
+    fn run(
+        &self,
+        program: &Program,
+        sub: &[u8; 32],
+        base: u32,
+    ) -> Option<[(bool, [u8; 32]); LANES]> {
+        let mut vm = Vm::new(&self.image(sub), base, program.bundles().len() as u64);
+        vm.run(program).ok()?;
         let solved = lanes(vm.p[15]);
         Some(core::array::from_fn(|l| {
             let o = l * MEM_SIZE + 64;
@@ -504,6 +515,66 @@ impl Challenge {
         }
         true
     }
+}
+
+/// Build the program for one seed: gadgets plus prologue and epilogue.
+fn compile(seed: u64, params: &Params, unscheduled: bool) -> (Vec<Gadget>, Program) {
+    let s = params.scratchpad;
+    let mut rng = SplitMix(seed);
+    let mut tmp = Temps { r: 0, p: 0, f: 0 };
+
+    let mut steps: Vec<Step> = vec![
+        one(St, 0, 0, 15, 32),
+        one(Li, MASK, 0, 0, (s - 1) as i32),
+        one(Li, 9, 0, 0, 64),
+        one(Sha256, 0, 0, 9, 0),
+    ];
+    for (i, &r) in STATE.iter().enumerate() {
+        steps.push(one(Ld, r, 0, 0, 64 + 4 * i as i32));
+    }
+    // After the loads in program order, so it can share their bundle
+    // (the scheduler treats memory as one resource).
+    if params.fill {
+        steps.push(one(Fill, 0, MASK, 9, 0));
+    }
+
+    let gadgets: Vec<Gadget> = (0..params.gadgets)
+        .map(|_| params.mix.pick(&mut rng))
+        .collect();
+    for &g in &gadgets {
+        emit(g, &mut rng, &mut tmp, &mut steps);
+    }
+
+    // Epilogue: block = state (64..96) || fold(scratchpad) (96..128), then hash.
+    for (i, &r) in STATE.iter().enumerate() {
+        steps.push(one(St, 0, 0, r, 64 + 4 * i as i32));
+    }
+    if params.fold {
+        steps.push(one(Li, 10, 0, 0, 96));
+        steps.push(one(Fold, 0, MASK, 10, 0));
+    }
+    steps.push(one(Li, 9, 0, 0, 64));
+    steps.push(one(Sha256, 0, 9, 9, 0));
+    steps.extend([
+        one(Ld, 9, 0, 0, 64),
+        one(Bswap, 9, 9, 0, 0),
+        one(Li, 10, 0, 0, params.threshold as i32),
+        one(CmpLtu, 15, 9, 10, 0),
+    ]);
+
+    let mut bundles = if unscheduled {
+        sequential(&steps)
+    } else {
+        schedule(&steps)
+    };
+    let halt = Slot::new(Halt, 0, 0, 0, 0);
+    let last = bundles.last_mut().unwrap();
+    match last.iter().position(|s| s.op == Nop) {
+        Some(i) => last[i] = halt,
+        None => bundles.push(crate::bundle(&[halt])),
+    }
+
+    (gadgets, Program::new(bundles).unwrap())
 }
 
 /// Batches in the nonce space: `batch * LANES` must fit in a u32.

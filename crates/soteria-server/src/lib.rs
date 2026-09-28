@@ -145,6 +145,8 @@ mod tests {
                 gadgets: MAX_GADGETS as usize + 1,
                 ..ok
             },
+            Params { block: 1, ..ok },
+            Params { block: 32, ..ok },
             zero_mix,
         ];
         for p in bad {

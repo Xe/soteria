@@ -10,7 +10,8 @@
 //! 36  scratchpad  u32   power of two in 256..=65536
 //! 40  threshold   u32   > 0
 //! 44  solutions   u32   1..=MAX_SOLUTIONS
-//! 48  flags       u32   bit 0 chained, bit 1 fold, bit 2 fill
+//! 48  flags       u32   bit 0 chained, bit 1 fold, bit 2 fill,
+//!                         bits 8..16 block (0 or 2..=31)
 //! 52  challenge   [u8; 32]
 //! 84  nonces      u32 x n, the rest of the buffer
 //! ```
@@ -54,7 +55,8 @@ pub fn parse(buf: &[u8]) -> Result<Request, i32> {
         && (256..=MEM_SIZE as u32).contains(&scratchpad)
         && threshold > 0
         && (1..=MAX_SOLUTIONS).contains(&solutions)
-        && flags & !7 == 0;
+        && flags & !0xFF07 == 0
+        && matches!(flags >> 8, 0 | 2..=31);
     if !ok {
         return Err(ERR_PARAMS);
     }
@@ -77,6 +79,7 @@ pub fn parse(buf: &[u8]) -> Result<Request, i32> {
             chained: flags & 1 != 0,
             fold: flags & 2 != 0,
             fill: flags & 4 != 0,
+            block: flags >> 8,
         },
         challenge: buf[52..84].try_into().unwrap(),
         nonces: buf[HEADER..]
@@ -90,7 +93,7 @@ pub fn parse(buf: &[u8]) -> Result<Request, i32> {
 /// same bytes themselves.
 pub fn request(seed: u64, p: &Params, challenge: &[u8; 32], nonces: &[u32]) -> Vec<u8> {
     let m = p.mix;
-    let flags = p.chained as u32 | (p.fold as u32) << 1 | (p.fill as u32) << 2;
+    let flags = p.chained as u32 | (p.fold as u32) << 1 | (p.fill as u32) << 2 | p.block << 8;
     let mut b = seed.to_le_bytes().to_vec();
     for x in [
         p.gadgets as u32,

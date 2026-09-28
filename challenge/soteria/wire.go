@@ -15,7 +15,17 @@ const (
 	flagChained = 1 << 0
 	flagFold    = 1 << 1
 	flagFill    = 1 << 2
+
+	// flagBlockShift positions Params::block (log2 nonces per program)
+	// in bits 8..16 of the flags.
+	flagBlockShift = 8
 )
+
+// blockBits is log2 of the nonces that share a program. Building a program
+// costs about 0.6 batches (2.5 attempts), so 256-nonce blocks add about 1% to
+// an honest client, while an attacker who compiles programs has to compile
+// one every 256 nonces instead of once per challenge.
+const blockBits = 8
 
 // Solutions per challenge. More solutions at a higher threshold is the same
 // expected work with less variance, which matters for slow phones.
@@ -36,7 +46,8 @@ var (
 const minRandomData = 16
 
 // Params are the per-challenge knobs sent to the modules. Everything but
-// Threshold uses the Rust defaults (gadgets::Params::default).
+// Threshold and the block size uses the Rust defaults
+// (gadgets::Params::default).
 type Params struct {
 	Seed       uint64
 	Gadgets    uint32
@@ -85,7 +96,7 @@ func NewParams(randomData []byte, difficulty int) (*Params, error) {
 		Scratchpad: 1 << 14,
 		Threshold:  t,
 		Solutions:  solutions,
-		Flags:      flagChained | flagFold | flagFill,
+		Flags:      flagChained | flagFold | flagFill | blockBits<<flagBlockShift,
 	}
 	copy(p.Challenge[:], h[32:64])
 

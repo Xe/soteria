@@ -6,7 +6,7 @@ for [Anubis](https://github.com/TecharoHQ/anubis) and is the subject of a
 planned blog post on xeiaso.net. Xe (the owner) writes Go and Rust, prefers
 direct, code-forward answers, and wants tradeoffs stated honestly.
 
-Status: working prototype, about 3,900 lines across 5 crates, 45 tests passing (plus 1 ignored benchmark). `challenge/soteria` is an Anubis challenge
+Status: working prototype, about 3,900 lines across 5 crates, 46 tests passing (plus 1 ignored benchmark). `challenge/soteria` is an Anubis challenge
 method (Go) built on the two modules; Anubis itself doesn't import it yet.
 
 ## Build and test
@@ -20,7 +20,7 @@ aliases pass `--target host-tuple` to run natively.
 ```sh
 rustup target add wasm32-wasip1
 curl https://wasmtime.dev/install.sh -sSf | bash
-cargo test --release                       # 45 tests across the workspace, ~1 s
+cargo test --release                       # 46 tests across the workspace, ~1 s
 cargo test --release <name> -- --nocapture # to see printed listings
 SOTERIA_OPCODE_SEED=42 cargo test --release # shuffled opcode numbering
 cargo build --release -p soteria-client -p soteria-server --target wasm32-unknown-unknown # browser and wazero modules
@@ -125,10 +125,20 @@ digest = sha256(state ‖ fold(scratchpad))
 solved = be32(digest[0..4]) < threshold
 ```
 
+With `Params::block = k` (0 or 2..=31; wire flags bits 8..16), the gadgets
+and program for nonce n of sub-challenge `sub` come from
+`block_seed(seed, sub, n >> k)` rather than `seed`. `Challenge` caches the
+last block program it built, so callers should walk nonces in order (all of
+them do). `Challenge::program`/`gadgets` stay the `seed` program, which
+`attempt_cost`, `expected_work` and `with_budget` use as a representative of
+the family; block programs vary in cost around it. Keying on `sub` as well as
+the block means chained and multi-solution searches, which restart at nonce 0
+per sub-challenge, can't reuse compiled blocks either.
+
 `Params` defaults: 32 gadgets, `Mix { alu 8, taps 3, float 2, memory 3,
 lanes 2, sha 1 }`, 16 KiB scratchpad, threshold `1 << 24`, 1 solution, not
-chained, fold on, fill on. The default challenge is about 63 bundles and packs
-about 2.8 slots per bundle, but costs about 361 bundle-equivalents per attempt
+chained, fold on, fill on, block 0 (one program). The default challenge is
+about 63 bundles and packs about 2.8 slots per bundle, but costs about 361 bundle-equivalents per attempt
 once `fill`, `fold` and `sha256` are charged for their real work.
 `Challenge::attempt_cost` is bundles + `ROUND_COST` per 32-byte mix round
 (`fill`, `fold`) + `SHA_COST` per `sha256`. `expected_work` and `with_budget`
@@ -157,9 +167,9 @@ mask, r15 nonce. Memory: 0..32 challenge, 32..36 nonce, 64..128 hash block,
 3. ~~**C-ABI exports.**~~ Done as two modules, each about 68 KB with no imports (sizes are close because the VM and SHA-256 dominate). Both export `memory`, `soteria_alloc(len) -> ptr` and `soteria_fingerprint() -> i64`, and take requests in the `soteria::wire` layout (pinned by `request_layout_is_stable`).
    - **Server** (`soteria_server.wasm`, for wazero): `soteria_verify(ptr, len) -> i32` (1, 0, or negative `ERR_*`), `soteria_verify_best(ptr, len) -> f64` (attempts, 0 if rejected, or negative `ERR_*`). Both free the buffer, so a pooled instance doesn't leak.
    - **Client** (`soteria_client.wasm`, for a browser Web Worker): one job per instance. `soteria_solve(ptr, len)` or `soteria_search(ptr, len, k)` starts a job (0 or `ERR_*`); `soteria_step(batches)` returns 1 when done, 0 to continue, `ERR_NO_JOB` (-3) or `ERR_EXHAUSTED` (-4); `soteria_nonces()`/`soteria_nonces_len()` point at the current nonces; `soteria_estimate()` is the best-effort credit. Built on `gadgets::Solver`, which `solver_steps_match_solve` checks against `Challenge::solve`. Verified end to end in V8 (Node 26): client solves and searches, server verifies, estimates agree. `ERR_EXHAUSTED` (2^30 batches) is not covered by a test. Params are validated at the boundary (caps: 4096 gadgets, 256 solutions, mix weights <= 65536), so bad params return `ERR_PARAMS` instead of trapping. Passing a pointer that didn't come from `soteria_alloc` traps in the allocator.
-4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 0.9 ms per verify at difficulty 4 (M-series). No `sync.Pool` yet. Anubis `difficulty` d means 16^d expected attempts (4 chained solutions, `threshold = 2^(34-4d)`), max 8. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
+4. ~~**Go verifier.**~~ Done in `challenge/soteria` as an Anubis method. One shared wazero runtime (concurrent `NewRuntime` calls race inside wazero), a fresh anonymous instance per call, 5 s timeout; about 0.9 ms per verify at difficulty 4 (M-series). No `sync.Pool` yet. Anubis `difficulty` d means 16^d expected attempts (4 chained solutions, `threshold = 2^(34-4d)`, 256-nonce program blocks), max 8. Seed and challenge are sha512(RandomData)[0..8] and [32..64]. The browser solves in one worker because `soteria_solve` always starts at nonce 0; parallel workers need a start/stride export.
 5. **Compile challenges to WASM (the main weakness fix).** Browsers currently interpret while attackers can compile each seed's program once. Translate each bundle to WASM SIMD locals (read into temps, then commit), guards to `v128.bitselect`, and memory ops to lane extracts plus loads. Import `sha256x4` rather than embedding it, and export `search(base, batches) -> i64`. Done when differential tests of interpreter versus compiled module agree on random seeds.
-6. **Program blocks from `nonce >> k`.** Derive the program from `H(seed, nonce >> k)`, with blocks aligned to batches, so compilation can't be amortized across a whole challenge.
+6. ~~**Program blocks from `nonce >> k`.**~~ Done: `Params::block`, `block_seed(seed, sub, nonce >> k)`, `Challenge::program_for`, tested by `blocks_get_their_own_programs` plus block variants of `scheduler_matches_sequential`, `solver_steps_match_solve` and `solve_verify_chained_and_not`. A default program builds in about 16 us, 0.62 batch attempts (`calibrate_memory_cost` prints it). The Anubis method uses k = 8 (about 1% client overhead); verify went from about 0.9 to 1.1 ms since the server builds one program per solution. Item 5's compiled `search(base, batches)` export should work per block.
 7. **Proposed ops, not yet added:** `mulhu` (high 32 bits of a 32×32 multiply) and `pmov` (predicate → -1/0 int). Then upgrade `SqrtTap`/`DivTap`/`ClzTap` to use `fbits` for full-entropy taps.
 8. **Latency-bound pointer-chase gadget** plus a larger arena (256 KiB–1 MiB per lane) to narrow the phone/desktop gap. This means raising `MEM_SIZE` and address masks from 16 bits.
 9. **Interpreter performance:** pre-decode, fixed-size pending writes, no allocation in the hot path. Protect it with a bundle-by-bundle differential test against the current `Vm`.
