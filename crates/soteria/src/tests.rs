@@ -1028,7 +1028,11 @@ mod gadget_tests {
                 }
                 base = 0;
             }
-            let got: Vec<_> = s.lanes().iter().map(|l| (l.best_nonce, l.best_head)).collect();
+            let got: Vec<_> = s
+                .lanes()
+                .iter()
+                .map(|l| (l.best_nonce, l.best_head))
+                .collect();
             assert_eq!(got, best);
         }
     }

@@ -21,8 +21,8 @@
 
 use soteria::best::{Best, MAX_BEST};
 use soteria::gadgets::{Challenge, Lane, Progress, Solver, BATCHES};
-use soteria::LANES;
 use soteria::wire::{self, parse, Request};
+use soteria::LANES;
 use std::cell::RefCell;
 
 pub use soteria::wire::{ERR_LENGTH, ERR_PARAMS};
