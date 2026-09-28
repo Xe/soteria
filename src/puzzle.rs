@@ -44,8 +44,8 @@ const NONCE: u8 = 15;
 fn random_slot(rng: &mut SplitMix) -> Slot {
     use Op::*;
     const OPS: &[Op] = &[
-        Add, Sub, Mul, Xor, And, Or, Addi, Shl, Shr, Rotr, Clz, Bswap, Popcnt, Ld, St,
-        CmpEq, CmpLt, CmpLtu, FCvt, FAdd, FSub, FMul, FDiv, FSqrt, FLt, FTrunc,
+        Add, Sub, Mul, Xor, And, Or, Addi, Shl, Shr, Rotr, Clz, Bswap, Popcnt, Ld, St, CmpEq,
+        CmpLt, CmpLtu, FCvt, FAdd, FSub, FMul, FDiv, FSqrt, FLt, FTrunc,
     ];
     let op = rng.pick(OPS);
     let dst = 1 + rng.below(11) as u8; // r1..r11
@@ -90,33 +90,60 @@ pub fn generate(seed: u64, rounds: u32, body_bundles: usize, difficulty: u32) ->
     let s = Slot::new;
     let mut p: Vec<Bundle> = vec![
         // Prologue: block = sha256(challenge || nonce || zeros)
-        bundle(&[s(St, 0, 0, NONCE, 32), s(Li, BLOCK, 0, 0, 64), s(Li, ONE, 0, 0, 1), s(Li, COUNTER, 0, 0, rounds as i32)]),
+        bundle(&[
+            s(St, 0, 0, NONCE, 32),
+            s(Li, BLOCK, 0, 0, 64),
+            s(Li, ONE, 0, 0, 1),
+            s(Li, COUNTER, 0, 0, rounds as i32),
+        ]),
         bundle(&[s(Sha256, 0, 0, BLOCK, 0)]),
     ];
 
     let top = p.len() as i32;
-    p.push(core::array::from_fn(|i| s(Ld, 1 + i as u8, BLOCK, 0, 4 * i as i32)));
-    p.push(core::array::from_fn(|i| s(Ld, 5 + i as u8, BLOCK, 0, 16 + 4 * i as i32)));
+    p.push(core::array::from_fn(|i| {
+        s(Ld, 1 + i as u8, BLOCK, 0, 4 * i as i32)
+    }));
+    p.push(core::array::from_fn(|i| {
+        s(Ld, 5 + i as u8, BLOCK, 0, 16 + 4 * i as i32)
+    }));
     for _ in 0..body_bundles {
         p.push(core::array::from_fn(|_| random_slot(&mut rng)));
     }
     // Fold r1..r8 into the second half of the block and rehash.
-    p.push(core::array::from_fn(|i| s(St, 0, BLOCK, 1 + i as u8, 32 + 4 * i as i32)));
-    p.push(core::array::from_fn(|i| s(St, 0, BLOCK, 5 + i as u8, 48 + 4 * i as i32)));
+    p.push(core::array::from_fn(|i| {
+        s(St, 0, BLOCK, 1 + i as u8, 32 + 4 * i as i32)
+    }));
+    p.push(core::array::from_fn(|i| {
+        s(St, 0, BLOCK, 5 + i as u8, 48 + 4 * i as i32)
+    }));
 
     // Loop control is pure subleq: counter -= 1, exit when it hits 0;
     // then `subleq r0, r0` computes 0 - 0 <= 0, i.e. an unconditional jump.
     let exit_pc = p.len() as i32 + 2;
-    p.push(bundle(&[s(Sha256, 0, BLOCK, BLOCK, 0), s(Subleq, 0, ONE, COUNTER, exit_pc)]));
+    p.push(bundle(&[
+        s(Sha256, 0, BLOCK, BLOCK, 0),
+        s(Subleq, 0, ONE, COUNTER, exit_pc),
+    ]));
     p.push(bundle(&[s(Subleq, 0, 0, 0, top)]));
 
     // Epilogue: p15 = clz(block[0]) >= difficulty
-    p.push(bundle(&[s(Ld, 1, BLOCK, 0, 0), s(Li, 9, 0, 0, difficulty as i32)]));
+    p.push(bundle(&[
+        s(Ld, 1, BLOCK, 0, 0),
+        s(Li, 9, 0, 0, difficulty as i32),
+    ]));
     p.push(bundle(&[s(Clz, 1, 1, 0, 0)]));
     p.push(bundle(&[s(CmpLtu, 1, 1, 9, 0)]));
-    p.push(bundle(&[s(PNot, RESULT_PRED as u8, 1, 0, 0), s(Halt, 0, 0, 0, 0), NOP, NOP]));
+    p.push(bundle(&[
+        s(PNot, RESULT_PRED as u8, 1, 0, 0),
+        s(Halt, 0, 0, 0, 0),
+        NOP,
+        NOP,
+    ]));
 
     let body = (2 + body_bundles + 2 + 1) as u64;
     let fuel = 2 + rounds as u64 * body + (rounds as u64 - 1) + 4;
-    Puzzle { program: Program::new(p).expect("generator emits valid bundles"), fuel }
+    Puzzle {
+        program: Program::new(p).expect("generator emits valid bundles"),
+        fuel,
+    }
 }

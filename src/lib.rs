@@ -173,11 +173,25 @@ pub struct Slot {
     pub imm: i32,
 }
 
-pub const NOP: Slot = Slot { op: Op::Nop, guard: 0, d: 0, a: 0, b: 0, imm: 0 };
+pub const NOP: Slot = Slot {
+    op: Op::Nop,
+    guard: 0,
+    d: 0,
+    a: 0,
+    b: 0,
+    imm: 0,
+};
 
 impl Slot {
     pub const fn new(op: Op, d: u8, a: u8, b: u8, imm: i32) -> Self {
-        Slot { op, guard: 0, d: d & 15, a: a & 15, b: b & 15, imm }
+        Slot {
+            op,
+            guard: 0,
+            d: d & 15,
+            a: a & 15,
+            b: b & 15,
+            imm,
+        }
     }
     /// Only commit in lanes where `p` is true.
     pub const fn when(mut self, p: u8) -> Self {
@@ -258,7 +272,10 @@ impl Program {
         let bundles = bytes
             .chunks_exact(BUNDLE_BYTES)
             .map(|b| {
-                let s: Vec<Slot> = b.chunks_exact(SLOT_BYTES).map(slot).collect::<Result<_, _>>()?;
+                let s: Vec<Slot> = b
+                    .chunks_exact(SLOT_BYTES)
+                    .map(slot)
+                    .collect::<Result<_, _>>()?;
                 Ok(bundle(&s))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -308,7 +325,12 @@ pub fn fold_lane(mem: &[u8]) -> [u8; 32] {
     let mut s1 = u32x4(0x510E_527F, 0x9B05_688C, 0x1F83_D9AB, 0x5BE0_CD19);
     for c in mem.chunks_exact(32) {
         // SAFETY: the chunk is exactly 32 bytes; v128_load has no alignment requirement.
-        let (a, b) = unsafe { (v128_load(c.as_ptr() as *const v128), v128_load(c[16..].as_ptr() as *const v128)) };
+        let (a, b) = unsafe {
+            (
+                v128_load(c.as_ptr() as *const v128),
+                v128_load(c[16..].as_ptr() as *const v128),
+            )
+        };
         mix_round(a, b, &mut s0, &mut s1);
     }
     let len = u32x4_splat(mem.len() as u32);
@@ -330,7 +352,12 @@ pub fn fold_lane(mem: &[u8]) -> [u8; 32] {
 pub fn fill_lane(key: &[u8; 32], out: &mut [u8]) {
     assert!(out.len() % 32 == 0);
     // SAFETY: key is 32 bytes; v128_load has no alignment requirement.
-    let (mut s0, mut s1) = unsafe { (v128_load(key.as_ptr() as *const v128), v128_load(key[16..].as_ptr() as *const v128)) };
+    let (mut s0, mut s1) = unsafe {
+        (
+            v128_load(key.as_ptr() as *const v128),
+            v128_load(key[16..].as_ptr() as *const v128),
+        )
+    };
     let mut ctr = u32x4(0, 1, 2, 3);
     for c in out.chunks_exact_mut(32) {
         mix_round(ctr, rotl(ctr, 16), &mut s0, &mut s1);
@@ -392,12 +419,24 @@ impl Vm {
         r[NONCE_REG] = from_lanes(core::array::from_fn(|l| nonce_base.wrapping_add(l as u32)));
         let mut p = [u32x4_splat(0); 16];
         p[0] = u32x4_splat(!0);
-        Vm { r, f: [f32x4_splat(0.0); 4], p, mem, pc: 0, fuel, halted: false }
+        Vm {
+            r,
+            f: [f32x4_splat(0.0); 4],
+            p,
+            mem,
+            pc: 0,
+            fuel,
+            halted: false,
+        }
     }
 
     fn guard(&self, g: u8) -> v128 {
         let m = self.p[(g & 15) as usize];
-        if g & 0x10 != 0 { v128_not(m) } else { m }
+        if g & 0x10 != 0 {
+            v128_not(m)
+        } else {
+            m
+        }
     }
 
     /// Control flow must agree across lanes: all true, or all false.
@@ -451,7 +490,10 @@ impl Vm {
     /// Execute one bundle.
     pub fn step(&mut self, prog: &Program) -> Result<(), Error> {
         use Op::*;
-        let bundle = *prog.0.get(self.pc as usize).ok_or(Error::PcOutOfRange(self.pc))?;
+        let bundle = *prog
+            .0
+            .get(self.pc as usize)
+            .ok_or(Error::PcOutOfRange(self.pc))?;
         self.fuel = self.fuel.checked_sub(1).ok_or(Error::OutOfFuel)?;
 
         let zero = i32x4_splat(0);
@@ -518,8 +560,21 @@ impl Vm {
                     }
                     Write::None
                 }
-                PAny => Write::P(d, if v128_any_true(pa) { u32x4_splat(!0) } else { zero }),
-                Bswap => Write::R(d, i8x16_swizzle(ra, i8x16(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12))),
+                PAny => Write::P(
+                    d,
+                    if v128_any_true(pa) {
+                        u32x4_splat(!0)
+                    } else {
+                        zero
+                    },
+                ),
+                Bswap => Write::R(
+                    d,
+                    i8x16_swizzle(
+                        ra,
+                        i8x16(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12),
+                    ),
+                ),
                 Popcnt => Write::R(d, popcnt32x4(ra)),
                 FBits => Write::R(d, fa),
                 FFrom => Write::F(d & 3, ra),
@@ -555,7 +610,10 @@ impl Vm {
                     let m = lanes(mask);
                     for l in 0..LANES {
                         if m[l] != 0 && lens[l] > ARENA_START {
-                            fill_lane(&keys[l], &mut self.mem[l * MEM_SIZE..][ARENA_START..lens[l]]);
+                            fill_lane(
+                                &keys[l],
+                                &mut self.mem[l * MEM_SIZE..][ARENA_START..lens[l]],
+                            );
                         }
                     }
                 }
@@ -578,8 +636,17 @@ impl Vm {
 /// Run one batch of LANES nonces. `nonce_base` must be a multiple of LANES so
 /// client and server always group nonces identically, which keeps traps
 /// (divergence, fuel) reproducible. Returns which lanes solved the puzzle.
-pub fn attempt(prog: &Program, image: &[u8], nonce_base: u32, fuel: u64) -> Result<[bool; LANES], Error> {
-    assert_eq!(nonce_base % LANES as u32, 0, "nonce_base must be lane-aligned");
+pub fn attempt(
+    prog: &Program,
+    image: &[u8],
+    nonce_base: u32,
+    fuel: u64,
+) -> Result<[bool; LANES], Error> {
+    assert_eq!(
+        nonce_base % LANES as u32,
+        0,
+        "nonce_base must be lane-aligned"
+    );
     let mut vm = Vm::new(image, nonce_base, fuel);
     vm.run(prog)?;
     Ok(lanes(vm.p[RESULT_PRED]).map(|x| x != 0))

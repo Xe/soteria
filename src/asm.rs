@@ -87,7 +87,10 @@ fn signature(op: Op) -> &'static [Arg] {
 }
 
 fn mnemonic(name: &str) -> Option<Op> {
-    Op::ALL.iter().copied().find(|op| format!("{op:?}").eq_ignore_ascii_case(name))
+    Op::ALL
+        .iter()
+        .copied()
+        .find(|op| format!("{op:?}").eq_ignore_ascii_case(name))
 }
 
 fn parse_imm(s: &str) -> Result<i32, String> {
@@ -130,7 +133,10 @@ fn parse_mem(s: &str) -> Result<(u8, i32), String> {
     }
     let split = inner[1..].find(['+', '-']).map(|i| i + 1);
     let (reg, off) = match split {
-        Some(i) => (inner[..i].trim(), parse_imm(inner[i..].trim().trim_start_matches('+'))?),
+        Some(i) => (
+            inner[..i].trim(),
+            parse_imm(inner[i..].trim().trim_start_matches('+'))?,
+        ),
         None => (inner, 0),
     };
     Ok((parse_reg(reg, 'r', 15)?, off))
@@ -144,17 +150,28 @@ fn parse_slot(text: &str, labels: &HashMap<String, usize>) -> Result<Slot, Strin
                 Some(p) => (true, p),
                 None => (false, g.trim()),
             };
-            (body.trim(), parse_reg(p, 'p', 15)? | if neg { 0x10 } else { 0 })
+            (
+                body.trim(),
+                parse_reg(p, 'p', 15)? | if neg { 0x10 } else { 0 },
+            )
         }
         None => (text.trim(), 0),
     };
 
     let (name, rest) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
     let op = mnemonic(name).ok_or_else(|| format!("unknown instruction `{name}`"))?;
-    let args: Vec<&str> = if rest.trim().is_empty() { vec![] } else { rest.split(',').map(str::trim).collect() };
+    let args: Vec<&str> = if rest.trim().is_empty() {
+        vec![]
+    } else {
+        rest.split(',').map(str::trim).collect()
+    };
     let sig = signature(op);
     if args.len() != sig.len() {
-        return Err(format!("`{name}` takes {} operands, got {}", sig.len(), args.len()));
+        return Err(format!(
+            "`{name}` takes {} operands, got {}",
+            sig.len(),
+            args.len()
+        ));
     }
 
     let mut slot = Slot::new(op, 0, 0, 0, 0);
@@ -178,15 +195,22 @@ fn parse_slot(text: &str, labels: &HashMap<String, usize>) -> Result<Slot, Strin
             Arg::Ptr(f) => {
                 let (r, off) = parse_mem(text)?;
                 if off != 0 {
-                    return Err(format!("`{name}` takes a bare pointer like `[r9]`, got `{text}`"));
+                    return Err(format!(
+                        "`{name}` takes a bare pointer like `[r9]`, got `{text}`"
+                    ));
                 }
                 set(f, r);
             }
             Arg::Target => {
-                let t = text.strip_prefix('@').ok_or_else(|| format!("branch target must start with `@`, got `{text}`"))?;
+                let t = text
+                    .strip_prefix('@')
+                    .ok_or_else(|| format!("branch target must start with `@`, got `{text}`"))?;
                 imm = match t.parse::<usize>() {
                     Ok(pc) => pc as i32,
-                    Err(_) => *labels.get(t).ok_or_else(|| format!("undefined label `{t}`"))? as i32,
+                    Err(_) => *labels
+                        .get(t)
+                        .ok_or_else(|| format!("undefined label `{t}`"))?
+                        as i32,
                 };
             }
         }
@@ -222,7 +246,10 @@ fn split_line(raw: &str) -> Result<(Vec<&str>, &str), String> {
 }
 
 pub fn assemble(src: &str) -> Result<Program, AsmError> {
-    let err = |line: usize, msg: String| AsmError { line: line + 1, msg };
+    let err = |line: usize, msg: String| AsmError {
+        line: line + 1,
+        msg,
+    };
 
     // Pass 1: label addresses.
     let mut labels = HashMap::new();
@@ -253,11 +280,20 @@ pub fn assemble(src: &str) -> Result<Program, AsmError> {
             .map_err(|m| err(n, m))?;
         let slots: Vec<Slot> = slots.into_iter().filter(|s| s.op != Op::Nop).collect();
         if slots.len() > SLOTS {
-            return Err(err(n, format!("{} slots in one bundle, max {SLOTS}", slots.len())));
+            return Err(err(
+                n,
+                format!("{} slots in one bundle, max {SLOTS}", slots.len()),
+            ));
         }
-        if let Some(&target) = slots.iter().find_map(|s| matches!(s.op, Op::Subleq | Op::Bp).then_some(&s.imm)) {
+        if let Some(&target) = slots
+            .iter()
+            .find_map(|s| matches!(s.op, Op::Subleq | Op::Bp).then_some(&s.imm))
+        {
             if target as usize >= pc {
-                return Err(err(n, format!("branch target @{target} is past the end ({pc} bundles)")));
+                return Err(err(
+                    n,
+                    format!("branch target @{target} is past the end ({pc} bundles)"),
+                ));
             }
         }
         bundles.push((n, crate::bundle(&slots)));
@@ -265,7 +301,9 @@ pub fn assemble(src: &str) -> Result<Program, AsmError> {
 
     let lines: Vec<usize> = bundles.iter().map(|b| b.0).collect();
     Program::new(bundles.into_iter().map(|b| b.1).collect()).map_err(|e| match e {
-        Error::MultipleControlOps { bundle } => err(lines[bundle], "more than one control op in a bundle".into()),
+        Error::MultipleControlOps { bundle } => {
+            err(lines[bundle], "more than one control op in a bundle".into())
+        }
         other => err(0, format!("{other:?}")),
     })
 }

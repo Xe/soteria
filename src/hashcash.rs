@@ -20,19 +20,32 @@ pub fn program(difficulty: u32, iterations: u32) -> Program {
     assert!((1..=32).contains(&difficulty) && iterations >= 1);
     let s = Slot::new;
     Program::new(vec![
-        /*  0 */ bundle(&[s(Li, 12, 0, 0, 64), s(Li, 14, 0, 0, iterations as i32), s(Li, 10, 0, 0, difficulty as i32 - 1)]),
+        /*  0 */
+        bundle(&[
+            s(Li, 12, 0, 0, 64),
+            s(Li, 14, 0, 0, iterations as i32),
+            s(Li, 10, 0, 0, difficulty as i32 - 1),
+        ]),
         // LOOP: write the nonce after the challenge, hash the 64-byte block.
-        /*  1 */ bundle(&[s(St, 0, 0, 15, 32), s(Addi, 14, 14, 0, -1)]),
+        /*  1 */
+        bundle(&[s(St, 0, 0, 15, 32), s(Addi, 14, 14, 0, -1)]),
         /*  2 */ bundle(&[s(Sha256, 0, 0, 12, 0)]),
         /*  3 */ bundle(&[s(Ld, 1, 12, 0, 0)]),
         // Loads are little-endian but the digest is big-endian.
-        /*  4 */ bundle(&[s(Bswap, 3, 1, 0, 0)]),
+        /*  4 */
+        bundle(&[s(Bswap, 3, 1, 0, 0)]),
         /*  5 */ bundle(&[s(Clz, 3, 3, 0, 0)]),
         // p15 = difficulty-1 < clz, i.e. clz >= difficulty. p3 = iterations remain.
-        /*  6 */ bundle(&[s(CmpLtu, 15, 10, 3, 0), s(CmpLt, 3, 0, 14, 0)]),
+        /*  6 */
+        bundle(&[s(CmpLtu, 15, 10, 3, 0), s(CmpLt, 3, 0, 14, 0)]),
         // Latch the nonce where solved, advance every lane, reduce across lanes.
         // All three read r15/p15 from before this bundle.
-        /*  7 */ bundle(&[s(Addi, 11, 15, 0, 0).when(15), s(Addi, 15, 15, 0, LANES as i32), s(PAny, 7, 15, 0, 0)]),
+        /*  7 */
+        bundle(&[
+            s(Addi, 11, 15, 0, 0).when(15),
+            s(Addi, 15, 15, 0, LANES as i32),
+            s(PAny, 7, 15, 0, 0),
+        ]),
         /*  8 */ bundle(&[s(Bp, 0, 7, 0, DONE)]),
         /*  9 */ bundle(&[s(Bp, 0, 3, 0, LOOP)]),
         /* 10 */ bundle(&[s(Halt, 0, 0, 0, 0)]),
@@ -46,7 +59,12 @@ pub fn fuel(iterations: u32) -> u64 {
 }
 
 /// Client: run the VM in chunks of `iterations` rounds until a lane solves.
-pub fn search(challenge: &[u8; 32], difficulty: u32, iterations: u32, max_runs: u32) -> Option<u32> {
+pub fn search(
+    challenge: &[u8; 32],
+    difficulty: u32,
+    iterations: u32,
+    max_runs: u32,
+) -> Option<u32> {
     let prog = program(difficulty, iterations);
     (0..max_runs).find_map(|run| {
         let base = run * iterations * LANES as u32;

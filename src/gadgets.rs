@@ -28,23 +28,35 @@ use crate::{lanes, sha4, Op::*, Program, Slot, Vm, ARENA_START, LANES, MEM_SIZE}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gadget {
     // ALU: cheap diffusion
-    AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift,
+    AddRot,
+    XorRot,
+    SubRot,
+    MulOdd,
+    AddBswap,
+    BswapTap,
+    XorShift,
     // Bit-counting taps
-    PopcntTap, ClzTap,
+    PopcntTap,
+    ClzTap,
     // Float taps
-    SqrtTap, DivTap,
+    SqrtTap,
+    DivTap,
     // Memory
-    MemLoad, MemScatter,
+    MemLoad,
+    MemScatter,
     // Lane-level data movement
-    CondSwap, WordRotate,
+    CondSwap,
+    WordRotate,
     // Expensive, SIMD-friendly
     ShaAnchor,
 }
 
 pub const ALL: [Gadget; 16] = {
     use Gadget::*;
-    [AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift, PopcntTap, ClzTap,
-     SqrtTap, DivTap, MemLoad, MemScatter, CondSwap, WordRotate, ShaAnchor]
+    [
+        AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift, PopcntTap, ClzTap, SqrtTap,
+        DivTap, MemLoad, MemScatter, CondSwap, WordRotate, ShaAnchor,
+    ]
 };
 
 /// Relative weights per gadget category. Shifting weight moves cost between
@@ -61,7 +73,14 @@ pub struct Mix {
 
 impl Default for Mix {
     fn default() -> Self {
-        Mix { alu: 8, taps: 3, float: 2, memory: 3, lanes: 2, sha: 1 }
+        Mix {
+            alu: 8,
+            taps: 3,
+            float: 2,
+            memory: 3,
+            lanes: 2,
+            sha: 1,
+        }
     }
 }
 
@@ -69,7 +88,10 @@ impl Mix {
     fn pick(&self, rng: &mut SplitMix) -> Gadget {
         use Gadget::*;
         let groups: [(u32, &[Gadget]); 6] = [
-            (self.alu, &[AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift]),
+            (
+                self.alu,
+                &[AddRot, XorRot, SubRot, MulOdd, AddBswap, BswapTap, XorShift],
+            ),
             (self.taps, &[PopcntTap, ClzTap]),
             (self.float, &[SqrtTap, DivTap]),
             (self.memory, &[MemLoad, MemScatter]),
@@ -115,7 +137,16 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Self {
-        Params { gadgets: 32, mix: Mix::default(), scratchpad: 1 << 14, threshold: 1 << 24, solutions: 1, chained: false, fold: true, fill: true }
+        Params {
+            gadgets: 32,
+            mix: Mix::default(),
+            scratchpad: 1 << 14,
+            threshold: 1 << 24,
+            solutions: 1,
+            chained: false,
+            fold: true,
+            fill: true,
+        }
     }
 }
 
@@ -204,15 +235,30 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
         }
         PopcntTap => {
             let t = tmp.r();
-            out.extend([one(Xor, t, y, z, 0), one(Popcnt, t, t, 0, 0), one(Rotr, t, t, 0, k), one(Add, x, x, t, 0)]);
+            out.extend([
+                one(Xor, t, y, z, 0),
+                one(Popcnt, t, t, 0, 0),
+                one(Rotr, t, t, 0, k),
+                one(Add, x, x, t, 0),
+            ]);
         }
         ClzTap => {
             let t = tmp.r();
-            out.extend([one(And, t, y, z, 0), one(Clz, t, t, 0, 0), one(Mul, t, t, y, 0), one(Add, x, x, t, 0)]);
+            out.extend([
+                one(And, t, y, z, 0),
+                one(Clz, t, t, 0, 0),
+                one(Mul, t, t, y, 0),
+                one(Add, x, x, t, 0),
+            ]);
         }
         SqrtTap => {
             let (f, t) = (tmp.f(), tmp.r());
-            out.extend([one(FCvt, f, y, 0, 0), one(FSqrt, f, f, 0, 0), one(FTrunc, t, f, 0, 0), one(Xor, x, x, t, 0)]);
+            out.extend([
+                one(FCvt, f, y, 0, 0),
+                one(FSqrt, f, f, 0, 0),
+                one(FTrunc, t, f, 0, 0),
+                one(Xor, x, x, t, 0),
+            ]);
         }
         DivTap => {
             let (fa, fb, t) = (tmp.f(), tmp.f(), tmp.r());
@@ -226,7 +272,11 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
         }
         MemLoad => {
             let t = tmp.r();
-            out.extend([one(And, t, y, MASK, 0), one(Ld, t, t, 0, 0), one(Xor, x, x, t, 0)]);
+            out.extend([
+                one(And, t, y, MASK, 0),
+                one(Ld, t, t, 0, 0),
+                one(Xor, x, x, t, 0),
+            ]);
         }
         MemScatter => {
             // Store y, then add in a load. Even if the addresses alias, x += y
@@ -246,7 +296,10 @@ pub(crate) fn emit(g: Gadget, rng: &mut SplitMix, tmp: &mut Temps, out: &mut Vec
             // and sorting collapses (1,2) and (2,1) into one state.
             let p = tmp.p();
             out.push(one(CmpLtu, p, z, w, 0));
-            out.push(vec![Slot::new(Addi, x, y, 0, 0).when(p), Slot::new(Addi, y, x, 0, 0).when(p)]);
+            out.push(vec![
+                Slot::new(Addi, x, y, 0, 0).when(p),
+                Slot::new(Addi, y, x, 0, 0).when(p),
+            ]);
         }
         WordRotate => {
             // (x, y, z, w) <- (y, z, w, x) in one bundle, no temporaries.
@@ -309,7 +362,9 @@ impl Challenge {
             steps.push(one(Fill, 0, MASK, 9, 0));
         }
 
-        let gadgets: Vec<Gadget> = (0..params.gadgets).map(|_| params.mix.pick(&mut rng)).collect();
+        let gadgets: Vec<Gadget> = (0..params.gadgets)
+            .map(|_| params.mix.pick(&mut rng))
+            .collect();
         for &g in &gadgets {
             emit(g, &mut rng, &mut tmp, &mut steps);
         }
@@ -331,7 +386,11 @@ impl Challenge {
             one(CmpLtu, 15, 9, 10, 0),
         ]);
 
-        let mut bundles = if unscheduled { sequential(&steps) } else { schedule(&steps) };
+        let mut bundles = if unscheduled {
+            sequential(&steps)
+        } else {
+            schedule(&steps)
+        };
         let halt = Slot::new(Halt, 0, 0, 0, 0);
         let last = bundles.last_mut().unwrap();
         match last.iter().position(|s| s.op == Nop) {
@@ -339,7 +398,11 @@ impl Challenge {
             None => bundles.push(crate::bundle(&[halt])),
         }
 
-        Challenge { params, gadgets, program: Program::new(bundles).unwrap() }
+        Challenge {
+            params,
+            gadgets,
+            program: Program::new(bundles).unwrap(),
+        }
     }
 
     /// Bundles per attempt. Straight-line code, so this is also the exact fuel.
@@ -352,19 +415,27 @@ impl Challenge {
     /// compute: mix rounds over the scratchpad and SHA-256 compressions.
     pub fn attempt_cost(&self) -> f64 {
         let s = self.params.scratchpad as f64;
-        let mem: f64 = self.program.bundles().iter().flatten().map(|slot| match slot.op {
-            Sha256 => SHA_COST,
-            Fill => (s - ARENA_START as f64) / 32.0 * ROUND_COST,
-            Fold => (s / 32.0 + 4.0) * ROUND_COST,
-            _ => 0.0,
-        }).sum();
+        let mem: f64 = self
+            .program
+            .bundles()
+            .iter()
+            .flatten()
+            .map(|slot| match slot.op {
+                Sha256 => SHA_COST,
+                Fill => (s - ARENA_START as f64) / 32.0 * ROUND_COST,
+                Fold => (s / 32.0 + 4.0) * ROUND_COST,
+                _ => 0.0,
+            })
+            .sum();
         self.bundles() as f64 + mem
     }
 
     /// Expected bundle-equivalents to solve every sub-challenge: the single
     /// "work" number a policy can reason about.
     pub fn expected_work(&self) -> f64 {
-        self.attempt_cost() * (4_294_967_296.0 / self.params.threshold as f64) * self.params.solutions as f64
+        self.attempt_cost()
+            * (4_294_967_296.0 / self.params.threshold as f64)
+            * self.params.solutions as f64
     }
 
     pub(crate) fn image(&self, sub: &[u8; 32]) -> Vec<u8> {
@@ -390,7 +461,11 @@ impl Challenge {
     }
 
     fn next_sub(&self, challenge: &[u8; 32], i: u32, digest: &[u8; 32]) -> [u8; 32] {
-        if self.params.chained { *digest } else { derive(challenge, i + 1) }
+        if self.params.chained {
+            *digest
+        } else {
+            derive(challenge, i + 1)
+        }
     }
 
     /// Client: find `solutions` nonces.
@@ -401,7 +476,9 @@ impl Challenge {
             let (nonce, digest) = (0..max_batches).find_map(|b| {
                 let base = b * LANES as u32;
                 let r = self.attempt(&sub, base)?;
-                r.iter().position(|x| x.0).map(|l| (base + l as u32, r[l].1))
+                r.iter()
+                    .position(|x| x.0)
+                    .map(|l| (base + l as u32, r[l].1))
             })?;
             nonces.push(nonce);
             sub = self.next_sub(challenge, i, &digest);
@@ -417,7 +494,9 @@ impl Challenge {
         let mut sub = self.first_sub(challenge);
         for (i, &n) in nonces.iter().enumerate() {
             let lane = n as usize % LANES;
-            let Some(r) = self.attempt(&sub, n - lane as u32) else { return false };
+            let Some(r) = self.attempt(&sub, n - lane as u32) else {
+                return false;
+            };
             if !r[lane].0 {
                 return false;
             }

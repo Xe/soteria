@@ -7,7 +7,11 @@ struct Imm(i32);
 
 impl fmt::Display for Imm {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.0.unsigned_abs() >= 256 { write!(f, "{:#x}", self.0) } else { write!(f, "{}", self.0) }
+        if self.0.unsigned_abs() >= 256 {
+            write!(f, "{:#x}", self.0)
+        } else {
+            write!(f, "{}", self.0)
+        }
     }
 }
 
@@ -52,8 +56,16 @@ impl fmt::Display for Slot {
 pub fn listing(prog: &Program) -> String {
     let mut out = String::new();
     for (pc, b) in prog.bundles().iter().enumerate() {
-        let slots: Vec<String> = b.iter().filter(|s| s.op != Op::Nop).map(|s| s.to_string()).collect();
-        let body = if slots.is_empty() { "nop".to_string() } else { slots.join(" | ") };
+        let slots: Vec<String> = b
+            .iter()
+            .filter(|s| s.op != Op::Nop)
+            .map(|s| s.to_string())
+            .collect();
+        let body = if slots.is_empty() {
+            "nop".to_string()
+        } else {
+            slots.join(" | ")
+        };
         out += &format!("{pc:2}: {body}\n");
     }
     out

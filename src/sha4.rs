@@ -31,8 +31,16 @@ fn compress4(s: &mut [v128; 8], block: &[v128; 16]) {
     let mut w = [u32x4_splat(0); 64];
     w[..16].copy_from_slice(block);
     for t in 16..64 {
-        let s0 = xor3(rotr(w[t - 15], 7), rotr(w[t - 15], 18), u32x4_shr(w[t - 15], 3));
-        let s1 = xor3(rotr(w[t - 2], 17), rotr(w[t - 2], 19), u32x4_shr(w[t - 2], 10));
+        let s0 = xor3(
+            rotr(w[t - 15], 7),
+            rotr(w[t - 15], 18),
+            u32x4_shr(w[t - 15], 3),
+        );
+        let s1 = xor3(
+            rotr(w[t - 2], 17),
+            rotr(w[t - 2], 19),
+            u32x4_shr(w[t - 2], 10),
+        );
         w[t] = i32x4_add(i32x4_add(w[t - 16], s0), i32x4_add(w[t - 7], s1));
     }
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *s;

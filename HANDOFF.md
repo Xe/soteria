@@ -32,19 +32,19 @@ test binary and the summary line is missing. Search the output for
 
 ## Layout
 
-| File | What it is |
-|---|---|
-| `src/lib.rs` | ISA (`Op`), encoding (`Slot`, `Program`), the VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`, opcode tables |
-| `src/sha4.rs` | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only) |
-| `src/sched.rs` | List scheduler: sequential steps → bundles, respecting hazards |
-| `src/gadgets.rs` | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget) |
-| `src/hashcash.rs` | Hand-written hashcash program + host search/verify |
-| `src/puzzle.rs` | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested |
-| `src/asm.rs` | Two-pass assembler; accepts disassembler output plus labels and `;` comments |
-| `src/disasm.rs` | `Display` for `Slot`, `listing(&Program)` |
-| `src/tests.rs` | All tests |
-| `build.rs` | Per-build Fisher-Yates opcode numbering from `SOTERIA_OPCODE_SEED` |
-| `README.md` | ISA reference table and feature summaries |
+| File              | What it is                                                                                                                                                        |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib.rs`      | ISA (`Op`), encoding (`Slot`, `Program`), the VM (`Vm::step`/`run`), `attempt`/`solve`/`verify`, `clz32x4`, `popcnt32x4`, `fold_lane`, `fill_lane`, opcode tables |
+| `src/sha4.rs`     | 4-way multi-buffer SHA-256 over `i32x4` (64-byte messages only)                                                                                                   |
+| `src/sched.rs`    | List scheduler: sequential steps → bundles, respecting hazards                                                                                                    |
+| `src/gadgets.rs`  | The 16 gadgets, `Params`/`Mix`, `Challenge` (build, solve, verify, budget)                                                                                        |
+| `src/hashcash.rs` | Hand-written hashcash program + host search/verify                                                                                                                |
+| `src/puzzle.rs`   | **Older** random-bundle generator; superseded by `gadgets.rs`, still tested                                                                                       |
+| `src/asm.rs`      | Two-pass assembler; accepts disassembler output plus labels and `;` comments                                                                                      |
+| `src/disasm.rs`   | `Display` for `Slot`, `listing(&Program)`                                                                                                                         |
+| `src/tests.rs`    | All tests                                                                                                                                                         |
+| `build.rs`        | Per-build Fisher-Yates opcode numbering from `SOTERIA_OPCODE_SEED`                                                                                                |
+| `README.md`       | ISA reference table and feature summaries                                                                                                                         |
 
 ## Machine model (the spec)
 
@@ -57,6 +57,7 @@ Bundle = 4 slots × 8 bytes: `op, guard, d, a<<4|b, imm:i32le`. Guard bits
 0–3 select a predicate, bit 4 negates it.
 
 `Vm::step`:
+
 1. Program counter out of range → `PcOutOfRange`; fuel exhausted → `OutOfFuel`.
 2. **Read phase:** every slot computes from pre-bundle state into a pending write. Branch conditions are decided here.
 3. **Commit phase:** writes apply in slot order (later slot wins), masked per lane by the guard via `v128_bitselect`. Writes to `p0` are dropped.
