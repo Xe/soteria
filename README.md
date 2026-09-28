@@ -95,6 +95,10 @@ With `block = k`, nonce `n` of each sub-challenge runs the program built from
 `block_seed(seed, sub, n >> k)` instead of one program per challenge, so an
 attacker who compiles programs pays for a compile every 2^k nonces. Building a
 default program costs about half a batch attempt in the interpreter.
+`cargo test --release bench_solve -- --ignored --nocapture` times solves
+under wasmtime for Anubis difficulties 4 through 12, where difficulty d is
+2^d expected attempts (about 100k nonces/s, 41 ms at difficulty 12, on an
+M-series Mac).
 `Challenge::with_budget` picks the threshold so expected work equals a given
 number of bundle-equivalents: bundles plus the real cost of `fill`, `fold`
 and `sha256`, which take 1 fuel each but do far more work (`attempt_cost`).

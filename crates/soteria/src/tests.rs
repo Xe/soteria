@@ -347,6 +347,55 @@ mod gadget_tests {
         assert!(avg > 1.5);
     }
 
+    /// Solve time on the interpreter, under wasmtime, at the Anubis method's
+    /// difficulties: d means 2^d expected attempts over 4 chained solutions
+    /// (`threshold` in challenge/soteria/wire.go), with 256-nonce blocks.
+    /// Timing includes `Challenge::new`, as the client module's does.
+    /// `cargo test --release bench_solve -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_solve() {
+        use std::time::Instant;
+        const RUNS: u64 = 64;
+        println!(
+            "{:>10} {:>9} {:>10} {:>10} {:>10} {:>10}",
+            "difficulty", "nonces/s", "mean ms", "p90 ms", "max ms", "nonces"
+        );
+        for d in 4..=12u32 {
+            let p = Params {
+                threshold: 1 << (34 - d),
+                solutions: 4,
+                chained: true,
+                block: 8,
+                ..Default::default()
+            };
+            let (mut nonces, mut times) = (0u64, vec![]);
+            for run in 0..RUNS {
+                let challenge = [run as u8; 32];
+                let t = Instant::now();
+                let c = Challenge::new(run, p);
+                let found = c.solve(&challenge, gadgets::BATCHES).unwrap();
+                times.push(t.elapsed().as_secs_f64() * 1e3);
+                assert!(c.verify(&challenge, &found));
+                // solve restarts at nonce 0 per sub-challenge and runs whole batches.
+                nonces += found
+                    .iter()
+                    .map(|&n| (n - n % LANES as u32) as u64 + LANES as u64)
+                    .sum::<u64>();
+            }
+            times.sort_by(f64::total_cmp);
+            let total: f64 = times.iter().sum();
+            println!(
+                "{d:>10} {:>9.0} {:>10.1} {:>10.1} {:>10.1} {:>10.0}",
+                nonces as f64 / total * 1e3,
+                total / RUNS as f64,
+                times[(RUNS * 9 / 10) as usize],
+                times[RUNS as usize - 1],
+                nonces as f64 / RUNS as f64,
+            );
+        }
+    }
+
     /// Measures the weights behind `gadgets::ROUND_COST` and `SHA_COST` on
     /// this interpreter. Rerun after interpreter or compiler changes:
     /// `cargo test --release calibrate_memory_cost -- --ignored --nocapture`
