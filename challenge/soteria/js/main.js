@@ -26,7 +26,7 @@ const fail = (titleMsg, statusMsg) => {
     title.textContent = titleMsg;
   }
   status.textContent = statusMsg;
-  image.src = imageURL("reject");
+  if (image !== null) image.src = imageURL("reject");
   progress.style.display = "none";
 };
 
@@ -80,6 +80,7 @@ const span = (cls, text) => {
 // head since the last solution. A head below the threshold solves. Classes
 // (dim, hit, best, solved) are styled in page.templ.
 const drawLanes = ({ attempts, found, lanes }) => {
+  if (lanesView === null) return;
   const need = Math.clz32(info.threshold - 1);
   const cells = Math.min(need, BAR);
   const header = "lane nonce    digest   zero bits";
@@ -175,7 +176,7 @@ const solve = (module, request, onProgress) =>
     u.searchParams.set("redir", redirectURL());
     u.searchParams.set("elapsedTime", `${t1 - t0}`);
 
-    image.src = imageURL("happy");
+    if (image !== null) image.src = imageURL("happy");
     window.location.replace(u.toString());
   } catch (err) {
     fail(s.calculation_error, `${s.calculation_error_msg} ${err.message}`);
