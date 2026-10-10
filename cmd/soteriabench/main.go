@@ -101,7 +101,9 @@ func main() {
 	mux.HandleFunc("GET "+anubis.APIPrefix+"pass-challenge", b.pass)
 
 	slog.Info("listening", "bind", *bind, "difficulty", *difficulty)
-	if err := http.ListenAndServe(*bind, mux); err != nil {
+	// ReadHeaderTimeout so idle half-open connections can't pile up.
+	srv := &http.Server{Addr: *bind, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("can't serve", "err", err)
 		os.Exit(1)
 	}

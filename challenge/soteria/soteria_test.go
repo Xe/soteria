@@ -2,6 +2,7 @@ package soteria
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TecharoHQ/anubis/lib/challenge"
 	"github.com/TecharoHQ/anubis/lib/config"
@@ -313,6 +315,13 @@ func TestValidateAdversarial(t *testing.T) {
 		{name: "missing fingerprint", values: values("fingerprint", ""), input: goodInput(), err: challenge.ErrMissingField},
 		{name: "missing elapsedTime", values: values("elapsedTime", ""), input: goodInput(), err: challenge.ErrMissingField},
 		{name: "elapsedTime not a number", values: values("elapsedTime", "taco"), input: goodInput(), err: challenge.ErrInvalidFormat},
+		{name: "elapsedTime NaN", values: values("elapsedTime", "NaN"), input: goodInput(), err: challenge.ErrInvalidFormat},
+		{name: "elapsedTime infinite", values: values("elapsedTime", "-Inf"), input: goodInput(), err: challenge.ErrInvalidFormat},
+		{name: "elapsedTime negative passes", values: values("elapsedTime", "-5"), input: goodInput()},
+		{name: "elapsedTime huge passes", values: values("elapsedTime", "1e300"), input: goodInput()},
+		{name: "oversized nonces", values: values("nonces", strings.Repeat(",", 1<<16)), input: goodInput(), err: challenge.ErrInvalidFormat},
+		{name: "padded nonces", values: values("nonces", strings.Repeat("0", 64)+good), input: goodInput(), err: challenge.ErrInvalidFormat},
+		{name: "oversized fingerprint", values: values("fingerprint", strings.Repeat("f", 1<<16)), input: goodInput(), err: challenge.ErrFailed},
 		{name: "nonce not an integer", values: values("nonces", "1,2,3,taco"), input: goodInput(), err: challenge.ErrInvalidFormat},
 		{name: "nonce overflows u32", values: values("nonces", "1,2,3,4294967296"), input: goodInput(), err: challenge.ErrInvalidFormat},
 		{name: "negative nonce", values: values("nonces", "1,2,3,-4"), input: goodInput(), err: challenge.ErrInvalidFormat},
@@ -386,6 +395,34 @@ func TestValidateAdversarial(t *testing.T) {
 				t.Errorf("Anubis would accept this failure: %v", err)
 			}
 		})
+	}
+}
+
+// TestVerifyWaitsForASlot checks that instances are bounded: with every slot
+// taken, a verification gives up at its deadline instead of instantiating.
+func TestVerifyWaitsForASlot(t *testing.T) {
+	t.Parallel()
+
+	i := setup(t)
+	p, err := NewParams(make([]byte, 64), difficulty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := p.Request(make([]uint32, p.Solutions))
+
+	for range cap(i.server.slots) {
+		i.server.slots <- struct{}{}
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := i.server.Verify(ctx, req); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("with no free slot: got %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	<-i.server.slots
+	if _, err := i.server.Verify(t.Context(), req); err != nil {
+		t.Fatalf("with a free slot: %v", err)
 	}
 }
 

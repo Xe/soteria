@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 
 	"github.com/tetratelabs/wazero"
@@ -21,6 +22,12 @@ var (
 // calls can run concurrently.
 type module struct {
 	code wazero.CompiledModule
+
+	// slots bounds live instances. Each one can grow to the runtime's 8 MiB
+	// cap, and anyone holding a challenge ID can ask for a verification, so
+	// without a bound a flood of requests holds 8 MiB apiece while they
+	// queue for a core.
+	slots chan struct{}
 }
 
 // wasmRuntime is shared by every module. It lives for the whole process:
@@ -51,15 +58,23 @@ func newModule(ctx context.Context, wasm []byte, exports ...string) (*module, er
 		}
 	}
 
-	return &module{code: code}, nil
+	return &module{code: code, slots: make(chan struct{}, runtime.GOMAXPROCS(0))}, nil
 }
 
 func (m *module) Close(ctx context.Context) error {
 	return m.code.Close(ctx)
 }
 
-// with runs fn against a fresh instance and closes it afterwards.
+// with runs fn against a fresh instance and closes it afterwards. It waits
+// for a free slot first, and gives up when ctx is done.
 func (m *module) with(ctx context.Context, fn func(api.Module) error) error {
+	select {
+	case m.slots <- struct{}{}:
+		defer func() { <-m.slots }()
+	case <-ctx.Done():
+		return fmt.Errorf("soteria: no free instance slot: %w", ctx.Err())
+	}
+
 	inst, err := wasmRuntime().InstantiateModule(ctx, m.code, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
 		return fmt.Errorf("soteria: can't instantiate module: %w", err)
