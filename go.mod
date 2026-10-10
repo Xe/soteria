@@ -1,9 +1,10 @@
 module github.com/Xe/soteria
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/TecharoHQ/anubis v1.28.0-pre2
+	github.com/TecharoHQ/mobile-request-classifier v0.0.0-20260905194624-41da576abd4c
 	github.com/a-h/templ v0.3.1020
 	github.com/facebookgo/flagenv v0.0.0-20160425205200-fcd59fca7456
 	github.com/tetratelabs/wazero v1.12.1-0.20260714071631-236c2458ed22
@@ -12,7 +13,6 @@ require (
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20251209175733-2a1774d88802.1 // indirect
 	cel.dev/expr v0.25.2 // indirect
-	github.com/TecharoHQ/mobile-request-classifier v0.0.0-20260905194624-41da576abd4c // indirect
 	github.com/TecharoHQ/secchua v0.0.0-20260905183452-e96aedb4d573 // indirect
 	github.com/TecharoHQ/thoth-proto v0.5.0 // indirect
 	github.com/a-h/parse v0.0.0-20250122154542-74294addb73e // indirect
@@ -76,11 +76,11 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20251209150349-8475f28825e9 // indirect
-	golang.org/x/mod v0.39.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect

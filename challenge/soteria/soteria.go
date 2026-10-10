@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,6 +40,15 @@ const Method = "soteria"
 // verifyTimeout bounds one verification. A valid proof takes a few
 // milliseconds; this only stops a pathological one from pinning a core.
 const verifyTimeout = 5 * time.Second
+
+// maxNonceLen is the longest a nonce can be in the nonces field: the 10
+// digits of a u32 plus its comma.
+const maxNonceLen = 11
+
+// maxElapsedTime caps the client-reported solve time (milliseconds) that
+// reaches the histogram. Anubis drops a challenge after 30 minutes, so
+// nothing honest is longer.
+const maxElapsedTime = float64(30 * time.Minute / time.Millisecond)
 
 var (
 	//go:embed static
@@ -250,11 +260,22 @@ func (i *Impl) Validate(r *http.Request, lg *slog.Logger, in *chall.ValidateInpu
 	if err != nil {
 		return chall.NewError("validate", "invalid response", fmt.Errorf("%w: elapsedTime: %w", chall.ErrInvalidFormat, err))
 	}
+	// ParseFloat accepts NaN and Inf, and one of either in a histogram
+	// ruins its sum for good.
+	if math.IsNaN(elapsedTime) || math.IsInf(elapsedTime, 0) {
+		return chall.NewError("validate", "invalid response", fmt.Errorf("%w: elapsedTime is not finite", chall.ErrInvalidFormat))
+	}
 
 	phone := wasPhone(r.Context(), lg, in.Store, in.Challenge.ID)
 	p, err := paramsFor(in.Challenge, in.Rule.Challenge.Difficulty, phone)
 	if err != nil {
 		return chall.NewError("validate", "invalid challenge", fmt.Errorf("%w: %w", chall.ErrInvalidFormat, err))
+	}
+
+	// Checked before splitting: a megabyte of commas would otherwise become
+	// a million strings just to be counted.
+	if len(noncesStr) > int(p.Solutions)*maxNonceLen {
+		return chall.NewError("validate", "invalid response", fmt.Errorf("%w: nonces is %d bytes, want at most %d", chall.ErrInvalidFormat, len(noncesStr), int(p.Solutions)*maxNonceLen))
 	}
 
 	fields := strings.Split(noncesStr, ",")
@@ -274,7 +295,7 @@ func (i *Impl) Validate(r *http.Request, lg *slog.Logger, in *chall.ValidateInpu
 	// A cached client module from an older build: its nonces are for
 	// different programs and can't verify.
 	if fingerprint != i.fingerprint {
-		return chall.NewError("validate", "outdated client, reload the page", fmt.Errorf("%w: client fingerprint %q, want %q", chall.ErrFailed, fingerprint, i.fingerprint))
+		return chall.NewError("validate", "outdated client, reload the page", fmt.Errorf("%w: client fingerprint %.16q, want %q", chall.ErrFailed, fingerprint, i.fingerprint))
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), verifyTimeout)
@@ -289,6 +310,9 @@ func (i *Impl) Validate(r *http.Request, lg *slog.Logger, in *chall.ValidateInpu
 		return chall.NewError("verify", "client calculated wrong data", fmt.Errorf("%w: nonces %v rejected", chall.ErrFailed, nonces))
 	}
 
+	// The client's clock can step backwards mid-solve, so a negative time
+	// isn't an error, but it and absurd ones are clamped.
+	elapsedTime = min(max(elapsedTime, 0), maxElapsedTime)
 	lg.DebugContext(r.Context(), "challenge took", "elapsedTime", elapsedTime)
 	chall.TimeTaken.WithLabelValues(Method).Observe(elapsedTime)
 
